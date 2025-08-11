@@ -445,29 +445,6 @@ local function formatEU(euValue)
     end
 end
 
--- Format time duration in a readable format
-local function formatTime(seconds)
-    if seconds <= 0 then
-        return "N/A"
-    end
-    
-    if seconds < 60 then
-        return string.format("%.0fs", seconds)
-    elseif seconds < 3600 then
-        local minutes = math.floor(seconds / 60)
-        local remainingSeconds = seconds % 60
-        return string.format("%dm %ds", minutes, remainingSeconds)
-    elseif seconds < 86400 then
-        local hours = math.floor(seconds / 3600)
-        local minutes = math.floor((seconds % 3600) / 60)
-        return string.format("%dh %dm", hours, minutes)
-    else
-        local days = math.floor(seconds / 86400)
-        local hours = math.floor((seconds % 86400) / 3600)
-        return string.format("%dd %dh", days, hours)
-    end
-end
-
 -- Get EU input/output rates from GT machine (if available) with error handling
 local function getEUInOutRates()
     if not energyStorage then
@@ -515,20 +492,6 @@ local function getEUInOutRates()
     end
     
     return euIn, euOut
-end
-
--- Calculate time estimates based on current usage rate
-local function getTimeEstimates(currentEnergy, maxEnergy, usageRate)
-    local timeToEmpty, timeToFull = nil, nil
-    
-    if usageRate < -100 then -- Losing energy (threshold to avoid noise)
-        timeToEmpty = currentEnergy / (-usageRate)
-    elseif usageRate > 100 then -- Gaining energy (threshold to avoid noise)
-        local remainingCapacity = maxEnergy - currentEnergy
-        timeToFull = remainingCapacity / usageRate
-    end
-    
-    return timeToEmpty, timeToFull
 end
 
 -- Set redstone signal state with error handling (all sides)
@@ -713,9 +676,7 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     gpu.set(3, barY + barHeight + 3, "Current: " .. formatEU(currentEnergy) .. " / " .. formatEU(maxEnergy))
     
     -- Calculate variables for display
-    local rawUsageRate, rawStatus = calculateUsageRate() -- For accurate time estimates
     local usageRate, status = getSmoothedUsageRate() -- For stable display
-    local timeToEmpty, timeToFull = getTimeEstimates(currentEnergy, maxEnergy, rawUsageRate)
     local euIn, euOut = getEUInOutRates()
     
     local currentLine = barY + barHeight + 4
@@ -755,26 +716,11 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
             gpu.setForeground(0xFF8080) -- Light red
             gpu.set(3, currentLine, "Usage: " .. formatEU(-usageRate) .. "/s")
             currentLine = currentLine + 1
-            if timeToEmpty then
-                gpu.setForeground(0xFF0000) -- Red for warning
-                gpu.set(3, currentLine, "Time to empty: " .. formatTime(timeToEmpty))
-                currentLine = currentLine + 1
-            end
         else
             -- Charging energy (positive rate or zero)
             gpu.setForeground(0x80FF80) -- Light green
             gpu.set(3, currentLine, "Charging: " .. formatEU(usageRate) .. "/s")
             currentLine = currentLine + 1
-            if usageRate == 0 then
-                -- Stable state - show placeholder time
-                gpu.setForeground(0x808080) -- Gray for placeholder
-                gpu.set(3, currentLine, "Time to full: ---")
-                currentLine = currentLine + 1
-            elseif timeToFull then
-                gpu.setForeground(0x00FF00) -- Green
-                gpu.set(3, currentLine, "Time to full: " .. formatTime(timeToFull))
-                currentLine = currentLine + 1
-            end
         end
     else
         gpu.setForeground(0x808080) -- Gray
