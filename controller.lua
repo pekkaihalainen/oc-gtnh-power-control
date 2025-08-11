@@ -23,30 +23,47 @@ local GPU_ADDRESS = "your-gpu-address-here" -- GPU address (optional, will auto-
 local SCREEN_ADDRESS = "your-screen-address-here" -- Screen address (optional, will auto-detect if empty)
 
 -- Load configuration from external file if it exists
-if filesystem.exists("/config.lua") then
-    print("📁 Loading configuration from config.lua...")
-    local configFile, err = loadfile("/config.lua")
-    if configFile then
-        local config = configFile()
-        if config then
-            -- Override defaults with config file values
-            ENERGY_DETECTOR_ADDRESS = config.ENERGY_DETECTOR_ADDRESS or ENERGY_DETECTOR_ADDRESS
-            REDSTONE_IO_ADDRESS = config.REDSTONE_IO_ADDRESS or REDSTONE_IO_ADDRESS
-            GPU_ADDRESS = config.GPU_ADDRESS or GPU_ADDRESS
-            SCREEN_ADDRESS = config.SCREEN_ADDRESS or SCREEN_ADDRESS
-            CHECK_INTERVAL = config.CHECK_INTERVAL or CHECK_INTERVAL
-            LOW_THRESHOLD = config.LOW_THRESHOLD or LOW_THRESHOLD
-            HIGH_THRESHOLD = config.HIGH_THRESHOLD or HIGH_THRESHOLD
-            REDSTONE_SIDE = config.REDSTONE_SIDE or REDSTONE_SIDE
-            print("✅ Configuration loaded successfully!")
-        else
-            print("⚠️  Warning: config.lua returned no data, using defaults")
+local function loadConfig()
+    local configPaths = {
+        "config.lua",           -- Current directory
+        "/config.lua",          -- Root directory
+        "/home/config.lua"      -- Home directory
+    }
+    
+    for _, configPath in ipairs(configPaths) do
+        if filesystem.exists(configPath) then
+            print("📁 Loading configuration from " .. configPath .. "...")
+            local configFile, err = loadfile(configPath)
+            if configFile then
+                local success, config = pcall(configFile)
+                if success and config then
+                    -- Override defaults with config file values
+                    ENERGY_DETECTOR_ADDRESS = config.ENERGY_DETECTOR_ADDRESS or ENERGY_DETECTOR_ADDRESS
+                    REDSTONE_IO_ADDRESS = config.REDSTONE_IO_ADDRESS or REDSTONE_IO_ADDRESS
+                    GPU_ADDRESS = config.GPU_ADDRESS or GPU_ADDRESS
+                    SCREEN_ADDRESS = config.SCREEN_ADDRESS or SCREEN_ADDRESS
+                    CHECK_INTERVAL = config.CHECK_INTERVAL or CHECK_INTERVAL
+                    LOW_THRESHOLD = config.LOW_THRESHOLD or LOW_THRESHOLD
+                    HIGH_THRESHOLD = config.HIGH_THRESHOLD or HIGH_THRESHOLD
+                    REDSTONE_SIDE = config.REDSTONE_SIDE or REDSTONE_SIDE
+                    print("✅ Configuration loaded successfully from " .. configPath)
+                    return true
+                else
+                    print("⚠️  Warning: " .. configPath .. " had errors: " .. tostring(config))
+                end
+            else
+                print("⚠️  Warning: Could not load " .. configPath .. ": " .. tostring(err))
+            end
         end
-    else
-        print("⚠️  Warning: Could not load config.lua: " .. tostring(err))
     end
-else
-    print("💡 No config.lua found - using inline configuration")
+    
+    return false
+end
+
+-- Try to load configuration
+if not loadConfig() then
+    print("💡 No config.lua found in any location - using inline configuration")
+    print("💡 Searched paths: config.lua (current dir), /config.lua (root), /home/config.lua")
     print("💡 Run 'controller list' to find component addresses")
     print("💡 See config_example.lua for external configuration setup")
 end
@@ -416,10 +433,54 @@ local function listComponents()
     print("")
 end
 
+-- Helper function to show file listing (for debugging config issues)
+local function showFiles()
+    print("=== FILE SYSTEM DEBUG ===")
+    print("Files in current directory:")
+    
+    local files = filesystem.list(".")
+    for file in files do
+        local path = "./" .. file
+        if filesystem.isDirectory(path) then
+            print("📁 " .. file)
+        else
+            print("📄 " .. file .. " (" .. filesystem.size(path) .. " bytes)")
+        end
+    end
+    print("")
+    
+    print("Configuration file search results:")
+    local configPaths = {"config.lua", "/config.lua", "/home/config.lua"}
+    for _, path in ipairs(configPaths) do
+        if filesystem.exists(path) then
+            print("✅ Found: " .. path)
+        else
+            print("❌ Missing: " .. path)
+        end
+    end
+    print("")
+end
+
 -- Check if first argument is 'list' to show component discovery
 local args = {...}
 if args[1] == "list" or args[1] == "components" then
     listComponents()
+    return
+elseif args[1] == "files" or args[1] == "debug" then
+    showFiles()
+    return
+elseif args[1] == "help" then
+    print("=== CONTROLLER HELP ===")
+    print("Usage: controller [command]")
+    print("")
+    print("Commands:")
+    print("  (no args)     - Start the power controller")
+    print("  list          - Show available components and addresses")
+    print("  components    - Same as 'list'")
+    print("  files         - Show current directory files and config search")
+    print("  debug         - Same as 'files'")
+    print("  help          - Show this help message")
+    print("")
     return
 end
 
