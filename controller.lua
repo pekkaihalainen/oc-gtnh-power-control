@@ -148,27 +148,47 @@ local function getEnergyLevel()
     local currentEnergy, maxEnergy = 0, 0
     local methodUsed = "none"
     
-    -- Method 1: Standard GT energy methods
-    if energyStorage.getEnergyStored and energyStorage.getMaxEnergyStored then
+    -- Method 1: GT EU methods (most common for GT machines)
+    if energyStorage.getEUStored and energyStorage.getEUCapacity then
+        currentEnergy = energyStorage.getEUStored()
+        maxEnergy = energyStorage.getEUCapacity()
+        methodUsed = "getEUStored/getEUCapacity"
+        
+        if DEBUG_ENERGY then
+            print(string.format("🔍 Method 1 (GT EU): current=%s, max=%s", tostring(currentEnergy), tostring(maxEnergy)))
+        end
+        
+    -- Method 2: Alternative GT EU methods
+    elseif energyStorage.getStoredEU and energyStorage.getCapacityEU then
+        currentEnergy = energyStorage.getStoredEU()
+        maxEnergy = energyStorage.getCapacityEU()
+        methodUsed = "getStoredEU/getCapacityEU"
+        
+        if DEBUG_ENERGY then
+            print(string.format("🔍 Method 2 (GT EU Alt): current=%s, max=%s", tostring(currentEnergy), tostring(maxEnergy)))
+        end
+        
+    -- Method 3: Standard GT energy methods
+    elseif energyStorage.getEnergyStored and energyStorage.getMaxEnergyStored then
         currentEnergy = energyStorage.getEnergyStored()
         maxEnergy = energyStorage.getMaxEnergyStored()
         methodUsed = "getEnergyStored/getMaxEnergyStored"
         
         if DEBUG_ENERGY then
-            print(string.format("🔍 Method 1 (GT Energy): current=%s, max=%s", tostring(currentEnergy), tostring(maxEnergy)))
+            print(string.format("🔍 Method 3 (GT Energy): current=%s, max=%s", tostring(currentEnergy), tostring(maxEnergy)))
         end
         
-    -- Method 2: Alternative energy methods
+    -- Method 4: Alternative energy methods
     elseif energyStorage.getStored and energyStorage.getCapacity then
         currentEnergy = energyStorage.getStored()
         maxEnergy = energyStorage.getCapacity()
         methodUsed = "getStored/getCapacity"
         
         if DEBUG_ENERGY then
-            print(string.format("🔍 Method 2 (Alternative): current=%s, max=%s", tostring(currentEnergy), tostring(maxEnergy)))
+            print(string.format("🔍 Method 4 (Alternative): current=%s, max=%s", tostring(currentEnergy), tostring(maxEnergy)))
         end
         
-    -- Method 3: Try energy tank methods (some GT blocks use tank-like systems)
+    -- Method 5: Try energy tank methods (some GT blocks use tank-like systems)
     elseif energyStorage.tank and type(energyStorage.tank) == "function" then
         local success, tankInfo = pcall(energyStorage.tank)
         if success and tankInfo and tankInfo.amount and tankInfo.capacity then
@@ -177,17 +197,17 @@ local function getEnergyLevel()
             methodUsed = "tank() method"
             
             if DEBUG_ENERGY then
-                print(string.format("🔍 Method 3 (Tank): current=%s, max=%s", tostring(currentEnergy), tostring(maxEnergy)))
+                print(string.format("🔍 Method 5 (Tank): current=%s, max=%s", tostring(currentEnergy), tostring(maxEnergy)))
             end
         else
             if DEBUG_ENERGY then
-                print("🔍 Method 3 (Tank): Failed or returned invalid data")
+                print("🔍 Method 5 (Tank): Failed or returned invalid data")
                 print("  Tank info: " .. tostring(tankInfo))
             end
             return 0
         end
         
-    -- Method 4: Try getting tank info by index (some energy storage adapters use indexed access)
+    -- Method 6: Try getting tank info by index (some energy storage adapters use indexed access)
     elseif energyStorage.getTankInfo and type(energyStorage.getTankInfo) == "function" then
         local success, tankInfo = pcall(energyStorage.getTankInfo, 1)
         if success and tankInfo and tankInfo[1] then
@@ -196,11 +216,11 @@ local function getEnergyLevel()
             methodUsed = "getTankInfo(1)"
             
             if DEBUG_ENERGY then
-                print(string.format("🔍 Method 4 (getTankInfo): current=%s, max=%s", tostring(currentEnergy), tostring(maxEnergy)))
+                print(string.format("🔍 Method 6 (getTankInfo): current=%s, max=%s", tostring(currentEnergy), tostring(maxEnergy)))
             end
         else
             if DEBUG_ENERGY then
-                print("🔍 Method 4 (getTankInfo): Failed or returned no data")
+                print("🔍 Method 6 (getTankInfo): Failed or returned no data")
                 print("  Tank info: " .. tostring(tankInfo))
             end
             return 0
@@ -709,11 +729,110 @@ local function testEnergyMethods()
         print("")
     end
     
-    -- List all available methods
-    print("🔍 All available methods on energy storage adapter:")
+    -- Test GT-specific methods if this is a gt_machine
+    if energyStorage.type == "gt_machine" then
+        print("🔧 Detected GT Machine - Testing GT-specific methods:")
+        print("")
+        
+        -- Test GT machine specific energy methods
+        local gtMethods = {
+            "getEUStored", "getEUCapacity", "getEUMaxStored", "getEUOutputVoltage", "getEUInputVoltage",
+            "getStoredEU", "getCapacityEU", "getMaxStoredEU", "getOutputEU", "getInputEU",
+            "getSensorInformation", "getMetaTileEntity", "getEnergyStored", "getMaxEnergyStored",
+            "getEnergyCapacity", "getStoredEnergy", "getMaxEnergy", "getEnergyContainer",
+            "getInfoData", "getSensorData"
+        }
+        
+        for _, methodName in ipairs(gtMethods) do
+            if energyStorage[methodName] and type(energyStorage[methodName]) == "function" then
+                print("🧪 Testing GT method: " .. methodName)
+                local success, result = pcall(energyStorage[methodName])
+                if success then
+                    print("   ✅ Success: " .. tostring(result))
+                    if type(result) == "table" then
+                        print("   📋 Table contents:")
+                        for key, value in pairs(result) do
+                            print(string.format("      %s: %s", tostring(key), tostring(value)))
+                        end
+                    end
+                    workingMethods = workingMethods + 1
+                else
+                    print("   ❌ Failed: " .. tostring(result))
+                end
+                methodsTested = methodsTested + 1
+                print("")
+            end
+        end
+        
+        -- Test methods that might need parameters
+        print("🔧 Testing GT methods with parameters:")
+        
+        if energyStorage.getSensorInformation then
+            print("🧪 Testing getSensorInformation()")
+            local success, result = pcall(energyStorage.getSensorInformation)
+            if success and result then
+                print("   ✅ getSensorInformation() success")
+                if type(result) == "table" then
+                    for i, info in ipairs(result) do
+                        print(string.format("   [%d]: %s", i, tostring(info)))
+                    end
+                else
+                    print("   Result: " .. tostring(result))
+                end
+                workingMethods = workingMethods + 1
+            else
+                print("   ❌ getSensorInformation() failed: " .. tostring(result))
+            end
+            methodsTested = methodsTested + 1
+            print("")
+        end
+        
+        if energyStorage.getInfoData then
+            print("🧪 Testing getInfoData()")
+            local success, result = pcall(energyStorage.getInfoData)
+            if success and result then
+                print("   ✅ getInfoData() success")
+                if type(result) == "table" then
+                    for key, value in pairs(result) do
+                        print(string.format("   %s: %s", tostring(key), tostring(value)))
+                    end
+                else
+                    print("   Result: " .. tostring(result))
+                end
+                workingMethods = workingMethods + 1
+            else
+                print("   ❌ getInfoData() failed: " .. tostring(result))
+            end
+            methodsTested = methodsTested + 1
+            print("")
+        end
+    end
+    
+    -- List all available methods and try calling simple ones
+    print("🔍 Testing ALL available methods:")
     for methodName, func in pairs(energyStorage) do
         if type(func) == "function" then
-            print("   - " .. methodName .. "()")
+            print("   🧪 " .. methodName .. "()")
+            
+            -- Try calling the method with no parameters
+            local success, result = pcall(func)
+            if success then
+                print("      ✅ Returns: " .. tostring(result) .. " (" .. type(result) .. ")")
+                if type(result) == "table" and result ~= nil then
+                    local count = 0
+                    for k, v in pairs(result) do
+                        if count < 3 then  -- Limit output
+                            print(string.format("         %s: %s", tostring(k), tostring(v)))
+                        end
+                        count = count + 1
+                    end
+                    if count > 3 then
+                        print(string.format("         ... and %d more entries", count - 3))
+                    end
+                end
+            else
+                print("      ❌ Error: " .. tostring(result))
+            end
         end
     end
     print("")
