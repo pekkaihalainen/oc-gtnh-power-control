@@ -78,7 +78,7 @@ local screenWidth, screenHeight = 0, 0
 
 -- Energy tracking for usage analysis
 local energyHistory = {} -- Table to store {timestamp, currentEnergy, maxEnergy}
-local HISTORY_DURATION = 5 -- Keep 5 seconds of history for time estimates
+local HISTORY_DURATION = 15 -- Keep 15 seconds of history for 10-second usage calculations
 
 -- Helper function to get component by address with fallback
 local function getComponentByAddress(address, componentType, fallbackType)
@@ -310,23 +310,47 @@ local function updateEnergyHistory(currentEnergy, maxEnergy)
     end
 end
 
--- Calculate current EU usage rate (EU/second) from previous loop iteration
+-- Calculate current EU usage rate (EU/second) over a 10-second period
 local function calculateUsageRate()
     if #energyHistory < 2 then
         return 0, "insufficient data"
     end
     
-    -- Compare current reading with previous reading (last 2 entries)
-    local previous = energyHistory[#energyHistory - 1]
     local current = energyHistory[#energyHistory]
+    local targetPeriod = 10 -- seconds
+    local oldestAcceptable = current.timestamp - targetPeriod
     
-    local timeDiff = current.timestamp - previous.timestamp
-    if timeDiff <= 0 then
+    -- Find the best entry that's approximately 10 seconds old
+    local oldEntry = nil
+    local bestTimeDiff = math.huge
+    
+    for i = 1, #energyHistory - 1 do
+        local entry = energyHistory[i]
+        local timeDiff = math.abs((current.timestamp - entry.timestamp) - targetPeriod)
+        
+        -- Prefer entries closer to exactly 10 seconds ago
+        if timeDiff < bestTimeDiff and (current.timestamp - entry.timestamp) >= 3 then -- At least 3 seconds difference
+            bestTimeDiff = timeDiff
+            oldEntry = entry
+        end
+    end
+    
+    -- Fallback: if we don't have good 10-second data, use the oldest available
+    if not oldEntry and #energyHistory >= 2 then
+        oldEntry = energyHistory[1]
+    end
+    
+    if not oldEntry then
+        return 0, "insufficient data"
+    end
+    
+    local actualTimeDiff = current.timestamp - oldEntry.timestamp
+    if actualTimeDiff <= 0 then
         return 0, "insufficient time"
     end
     
-    local energyDiff = current.currentEnergy - previous.currentEnergy
-    local rate = energyDiff / timeDiff
+    local energyDiff = current.currentEnergy - oldEntry.currentEnergy
+    local rate = energyDiff / actualTimeDiff
     
     return rate, "ok"
 end
@@ -678,7 +702,7 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     else
         gpu.setForeground(0x808080) -- Gray
         if status == "insufficient data" then
-            gpu.set(3, currentLine, "Analyzing energy usage... (" .. #energyHistory .. "/2 samples)")
+            gpu.set(3, currentLine, "Analyzing 10-second usage... (" .. #energyHistory .. " samples)")
         else
             gpu.set(3, currentLine, "Energy rate: " .. formatEU(usageRate) .. "/s")
         end
@@ -733,7 +757,7 @@ local function displayStatus(energyPercent)
             usageInfo = " | Charging: " .. formatEU(usageRate) .. "/s"
         end
     elseif status == "insufficient data" then
-        usageInfo = " | Analyzing..."
+        usageInfo = " | Analyzing 10s..."
     else
         usageInfo = " | Rate: " .. formatEU(usageRate) .. "/s"
     end
