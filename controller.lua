@@ -368,6 +368,53 @@ local function formatTime(seconds)
     end
 end
 
+-- Get EU input/output rates from GT machine (if available)
+local function getEUInOutRates()
+    if not energyStorage then
+        return nil, nil
+    end
+    
+    local safeCall = function(methodName)
+        if energyStorage[methodName] then
+            local success, result = pcall(function() return energyStorage[methodName]() end)
+            if success and result ~= nil then
+                return result
+            end
+        end
+        return nil
+    end
+    
+    local euIn, euOut = nil, nil
+    
+    -- Try various GT methods for input/output rates
+    euIn = safeCall("getEUInputAverage") or safeCall("getAverageInputVoltage") or 
+           safeCall("getInputVoltage") or safeCall("getEUInput") or safeCall("getInputEU")
+    
+    euOut = safeCall("getEUOutputAverage") or safeCall("getAverageOutputVoltage") or 
+            safeCall("getOutputVoltage") or safeCall("getEUOutput") or safeCall("getOutputEU")
+    
+    -- Try getSensorInformation which might contain input/output data
+    if not euIn or not euOut then
+        local sensorInfo = safeCall("getSensorInformation")
+        if sensorInfo and type(sensorInfo) == "table" then
+            -- GT sensor information often has input/output as array elements
+            -- Common patterns: [1] = input rate, [2] = output rate
+            for i, info in ipairs(sensorInfo) do
+                local infoStr = tostring(info)
+                if string.find(infoStr, "Input") or string.find(infoStr, "input") then
+                    local rate = tonumber(string.match(infoStr, "([%d%.]+)"))
+                    if rate then euIn = rate end
+                elseif string.find(infoStr, "Output") or string.find(infoStr, "output") then
+                    local rate = tonumber(string.match(infoStr, "([%d%.]+)"))
+                    if rate then euOut = rate end
+                end
+            end
+        end
+    end
+    
+    return euIn, euOut
+end
+
 -- Calculate time estimates based on current usage rate
 local function getTimeEstimates(currentEnergy, maxEnergy, usageRate)
     local timeToEmpty, timeToFull = nil, nil
@@ -515,36 +562,58 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     -- Calculate and display usage information
     local usageRate, status = calculateUsageRate()
     local timeToEmpty, timeToFull = getTimeEstimates(currentEnergy, maxEnergy, usageRate)
+    local euIn, euOut = getEUInOutRates()
+    
+    local currentLine = barY + barHeight + 4
     
     if status == "ok" and math.abs(usageRate) > 100 then
         if usageRate < 0 then
             -- Losing energy
             gpu.setForeground(0xFF8080) -- Light red
-            gpu.set(3, barY + barHeight + 4, "Usage: " .. formatEU(-usageRate) .. "/s (consuming)")
+            gpu.set(3, currentLine, "Usage: " .. formatEU(-usageRate) .. "/s (consuming)")
+            currentLine = currentLine + 1
             if timeToEmpty then
                 gpu.setForeground(0xFF0000) -- Red for warning
-                gpu.set(3, barY + barHeight + 5, "Time to empty: " .. formatTime(timeToEmpty))
+                gpu.set(3, currentLine, "Time to empty: " .. formatTime(timeToEmpty))
+                currentLine = currentLine + 1
             end
         else
             -- Gaining energy
             gpu.setForeground(0x80FF80) -- Light green
-            gpu.set(3, barY + barHeight + 4, "Charge: " .. formatEU(usageRate) .. "/s (charging)")
+            gpu.set(3, currentLine, "Charge: " .. formatEU(usageRate) .. "/s (charging)")
+            currentLine = currentLine + 1
             if timeToFull then
                 gpu.setForeground(0x00FF00) -- Green
-                gpu.set(3, barY + barHeight + 5, "Time to full: " .. formatTime(timeToFull))
+                gpu.set(3, currentLine, "Time to full: " .. formatTime(timeToFull))
+                currentLine = currentLine + 1
             end
         end
     else
         gpu.setForeground(0x808080) -- Gray
         if status == "insufficient data" then
-            gpu.set(3, barY + barHeight + 4, "Analyzing energy usage... (" .. #energyHistory .. "/2 samples)")
+            gpu.set(3, currentLine, "Analyzing energy usage... (" .. #energyHistory .. "/2 samples)")
         else
-            gpu.set(3, barY + barHeight + 4, "Energy stable (rate: " .. formatEU(usageRate) .. "/s)")
+            gpu.set(3, currentLine, "Energy stable (rate: " .. formatEU(usageRate) .. "/s)")
+        end
+        currentLine = currentLine + 1
+    end
+    
+    -- Display EU input/output rates if available
+    if euIn or euOut then
+        gpu.setForeground(0x00A6FF) -- Light blue for info
+        if euIn and euIn > 0 then
+            gpu.set(3, currentLine, "Average EU In: " .. formatEU(euIn) .. "/s")
+            currentLine = currentLine + 1
+        end
+        if euOut and euOut > 0 then
+            gpu.setForeground(0xFFB366) -- Light orange for output
+            gpu.set(3, currentLine, "Average EU Out: " .. formatEU(euOut) .. "/s")
+            currentLine = currentLine + 1
         end
     end
     
-    -- Status section (moved down to accommodate new info)
-    local statusY = barY + barHeight + 7
+    -- Status section (positioned after energy info)
+    local statusY = currentLine + 1
     gpu.setForeground(0xFF00FF)
     gpu.set(3, statusY, "REDSTONE STATUS:")
     
@@ -584,6 +653,22 @@ local function displayStatus(energyPercent)
     end
     
     print(string.format("[%s] Energy: %s | Redstone: %s%s", timeDisplay, energyDisplay, stateDisplay, usageInfo))
+    
+    -- Display EU in/out rates if available (on separate line for clarity)
+    local euIn, euOut = getEUInOutRates()
+    if euIn or euOut then
+        local inOutInfo = ""
+        if euIn and euIn > 0 then
+            inOutInfo = inOutInfo .. "In: " .. formatEU(euIn) .. "/s"
+        end
+        if euOut and euOut > 0 then
+            if inOutInfo ~= "" then inOutInfo = inOutInfo .. " | " end
+            inOutInfo = inOutInfo .. "Out: " .. formatEU(euOut) .. "/s"
+        end
+        if inOutInfo ~= "" then
+            print(string.format("[%s] %s", timeDisplay, inOutInfo))
+        end
+    end
 end
 
 --[[
@@ -954,7 +1039,8 @@ local function testEnergyMethods()
             "getStoredEU", "getCapacityEU", "getMaxStoredEU", "getOutputEU", "getInputEU",
             "getSensorInformation", "getMetaTileEntity", "getEnergyStored", "getMaxEnergyStored",
             "getEnergyCapacity", "getStoredEnergy", "getMaxEnergy", "getEnergyContainer",
-            "getInfoData", "getSensorData"
+            "getInfoData", "getSensorData", "getEUInputAverage", "getEUOutputAverage",
+            "getAverageInputVoltage", "getAverageOutputVoltage", "getInputVoltage", "getOutputVoltage"
         }
         
         for _, methodName in ipairs(gtMethods) do
@@ -1020,6 +1106,21 @@ local function testEnergyMethods()
             methodsTested = methodsTested + 1
             print("")
         end
+        
+        -- Test EU input/output rate methods specifically
+        print("⚡ Testing EU Input/Output Rate Methods:")
+        local euIn, euOut = getEUInOutRates()
+        if euIn then
+            print("   ✅ EU Input Rate: " .. formatEU(euIn) .. "/s")
+        else
+            print("   ❌ Could not read EU input rate")
+        end
+        if euOut then
+            print("   ✅ EU Output Rate: " .. formatEU(euOut) .. "/s")
+        else
+            print("   ❌ Could not read EU output rate")
+        end
+        print("")
     end
     
     -- List all available methods and try calling them (including field-based methods)
