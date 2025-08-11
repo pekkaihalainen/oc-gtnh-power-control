@@ -78,7 +78,7 @@ local screenWidth, screenHeight = 0, 0
 
 -- Energy tracking for usage analysis
 local energyHistory = {} -- Table to store {timestamp, currentEnergy, maxEnergy}
-local HISTORY_DURATION = 5 -- Keep 5 seconds of history for averaging
+local HISTORY_DURATION = 5 -- Keep 5 seconds of history for time estimates
 
 -- Helper function to get component by address with fallback
 local function getComponentByAddress(address, componentType, fallbackType)
@@ -310,21 +310,22 @@ local function updateEnergyHistory(currentEnergy, maxEnergy)
     end
 end
 
--- Calculate average EU usage rate (EU/second) over the tracked period
+-- Calculate current EU usage rate (EU/second) from previous loop iteration
 local function calculateUsageRate()
     if #energyHistory < 2 then
         return 0, "insufficient data"
     end
     
-    local oldest = energyHistory[1]
-    local newest = energyHistory[#energyHistory]
+    -- Compare current reading with previous reading (last 2 entries)
+    local previous = energyHistory[#energyHistory - 1]
+    local current = energyHistory[#energyHistory]
     
-    local timeDiff = newest.timestamp - oldest.timestamp
+    local timeDiff = current.timestamp - previous.timestamp
     if timeDiff <= 0 then
         return 0, "insufficient time"
     end
     
-    local energyDiff = newest.currentEnergy - oldest.currentEnergy
+    local energyDiff = current.currentEnergy - previous.currentEnergy
     local rate = energyDiff / timeDiff
     
     return rate, "ok"
@@ -487,16 +488,16 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     local barWidth = screenWidth - 6
     local barX = 3
     local barY = 7
-    local barHeight = 3
+    local barHeight = 6  -- Double the height from 3 to 6
     
     local energyColor = getEnergyColor(energyPercent)
     drawProgressBar(barX, barY, barWidth, barHeight, energyPercent, energyColor)
     
-    -- Energy percentage text
+    -- Energy percentage text (moved outside and above the progress bar)
     gpu.setForeground(0x00A6FF)
     local percentText = string.format("%.1f%%", energyPercent * 100)
     local percentX = math.floor((screenWidth - unicode.len(percentText)) / 2) + 1
-    gpu.set(percentX, barY + 1, percentText)
+    gpu.set(percentX, barY - 1, percentText)  -- Position above the bar instead of inside
     
     -- Threshold indicators
     gpu.setForeground(0xFF0000)
