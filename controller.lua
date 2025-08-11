@@ -12,7 +12,7 @@ local filesystem = require("filesystem")
 local CHECK_INTERVAL = 5 -- seconds between energy checks
 local LOW_THRESHOLD = 0.20 -- 20% - enable redstone signal
 local HIGH_THRESHOLD = 0.90 -- 90% - disable redstone signal
-local REDSTONE_SIDE = 1 -- redstone I/O side (1-6, or use sides.bottom etc)
+local REDSTONE_SIDE = 1 -- (deprecated - now outputs to all sides automatically)
 
 -- Component Addresses (Set these to your specific component addresses)
 -- To find component addresses, run: controller list
@@ -431,7 +431,7 @@ local function getTimeEstimates(currentEnergy, maxEnergy, usageRate)
     return timeToEmpty, timeToFull
 end
 
--- Set redstone signal state with error handling
+-- Set redstone signal state with error handling (all sides)
 local function setRedstoneSignal(active)
     if not redstoneIO then 
         print("⚠ Warning: No redstone I/O component available")
@@ -440,16 +440,19 @@ local function setRedstoneSignal(active)
     
     local strength = active and 15 or 0
     local success, error = pcall(function()
-        redstoneIO.setOutput(REDSTONE_SIDE, strength)
+        -- Set all sides (0-5: down, up, north, south, west, east)
+        for side = 0, 5 do
+            redstoneIO.setOutput(side, strength)
+        end
     end)
     
     if success then
         isRedstoneActive = active
         local status = active and "ENABLED" or "DISABLED"
-        print(string.format("🔴 Redstone signal %s (strength: %d)", status, strength))
+        print(string.format("🔴 Redstone signal %s on ALL SIDES (strength: %d)", status, strength))
         return true
     else
-        print(string.format("❌ Failed to set redstone signal: %s", tostring(error)))
+        print(string.format("❌ Failed to set redstone signal on all sides: %s", tostring(error)))
         print("   Will retry on next cycle...")
         return false
     end
@@ -646,37 +649,31 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     
     -- Display usage information after EU rates
     if status == "ok" then
-        if usageRate < -100 then
-            -- Losing energy significantly
+        if usageRate < 0 then
+            -- Consuming energy (any negative rate)
             gpu.setForeground(0xFF8080) -- Light red
-            gpu.set(3, currentLine, "Usage: " .. formatEU(-usageRate) .. "/s (consuming)")
+            gpu.set(3, currentLine, "Usage: " .. formatEU(-usageRate) .. "/s")
             currentLine = currentLine + 1
             if timeToEmpty then
                 gpu.setForeground(0xFF0000) -- Red for warning
                 gpu.set(3, currentLine, "Time to empty: " .. formatTime(timeToEmpty))
                 currentLine = currentLine + 1
             end
-        elseif usageRate > 100 then
-            -- Gaining energy significantly
+        else
+            -- Charging energy (positive rate or zero)
             gpu.setForeground(0x80FF80) -- Light green
-            gpu.set(3, currentLine, "Charge: " .. formatEU(usageRate) .. "/s (charging)")
+            gpu.set(3, currentLine, "Charging: " .. formatEU(usageRate) .. "/s")
             currentLine = currentLine + 1
-            if timeToFull then
+            if usageRate == 0 then
+                -- Stable state - show placeholder time
+                gpu.setForeground(0x808080) -- Gray for placeholder
+                gpu.set(3, currentLine, "Time to full: ---")
+                currentLine = currentLine + 1
+            elseif timeToFull then
                 gpu.setForeground(0x00FF00) -- Green
                 gpu.set(3, currentLine, "Time to full: " .. formatTime(timeToFull))
                 currentLine = currentLine + 1
             end
-        else
-            -- Small changes or stable - always show as charging
-            gpu.setForeground(0x808080) -- Gray
-            if usageRate < 0 then
-                gpu.set(3, currentLine, "Usage: " .. formatEU(-usageRate) .. "/s (consuming slowly)")
-            elseif usageRate > 0 then
-                gpu.set(3, currentLine, "Charge: " .. formatEU(usageRate) .. "/s (charging slowly)")
-            else
-                gpu.set(3, currentLine, "Charging: 0 EU/s")
-            end
-            currentLine = currentLine + 1
         end
     else
         gpu.setForeground(0x808080) -- Gray
@@ -704,7 +701,7 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
         gpu.setForeground(0x808080)
         gpu.set(3, statusY + 2, "Control Logic: Enable at <20%, Disable at >90%")
         gpu.set(3, statusY + 3, "Check Interval: " .. CHECK_INTERVAL .. " seconds")
-        gpu.set(3, statusY + 4, "Redstone Side: " .. REDSTONE_SIDE)
+        gpu.set(3, statusY + 4, "Redstone Output: All Sides")
         
         -- Instructions
         gpu.setForeground(0x00A6FF)
@@ -732,10 +729,8 @@ local function displayStatus(energyPercent)
     if status == "ok" then
         if usageRate < 0 then
             usageInfo = " | Usage: " .. formatEU(-usageRate) .. "/s"
-        elseif usageRate > 0 then
-            usageInfo = " | Charge: " .. formatEU(usageRate) .. "/s"
         else
-            usageInfo = " | Charging: 0 EU/s"
+            usageInfo = " | Charging: " .. formatEU(usageRate) .. "/s"
         end
     elseif status == "insufficient data" then
         usageInfo = " | Analyzing..."
@@ -797,7 +792,7 @@ to access its energy methods.
 local function main()
     print("=== Lapatronic Supercapacitor Controller ===")
     print(string.format("Low threshold: %.0f%% | High threshold: %.0f%%", LOW_THRESHOLD * 100, HIGH_THRESHOLD * 100))
-    print(string.format("Check interval: %ds | Redstone side: %d", CHECK_INTERVAL, REDSTONE_SIDE))
+    print(string.format("Check interval: %ds | Redstone output: All sides", CHECK_INTERVAL))
     print("Press Ctrl+C to stop")
     print("")
     
