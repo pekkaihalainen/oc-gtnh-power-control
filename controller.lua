@@ -76,6 +76,10 @@ local gpu = nil
 local screen = nil
 local screenWidth, screenHeight = 0, 0
 
+-- Energy tracking for usage analysis
+local energyHistory = {} -- Table to store {timestamp, currentEnergy, maxEnergy}
+local HISTORY_DURATION = 5 -- Keep 5 seconds of history for averaging
+
 -- Helper function to get component by address with fallback
 local function getComponentByAddress(address, componentType, fallbackType)
     if address and address ~= "" and address ~= "your-" .. componentType .. "-address-here" then
@@ -284,6 +288,99 @@ local function getEnergyLevel()
     return percentage
 end
 
+-- Update energy history for usage tracking
+local function updateEnergyHistory(currentEnergy, maxEnergy)
+    local currentTime = os.time()
+    
+    -- Add new entry
+    table.insert(energyHistory, {
+        timestamp = currentTime,
+        currentEnergy = currentEnergy,
+        maxEnergy = maxEnergy
+    })
+    
+    -- Remove old entries (older than HISTORY_DURATION seconds)
+    local cutoffTime = currentTime - HISTORY_DURATION
+    for i = #energyHistory, 1, -1 do
+        if energyHistory[i].timestamp < cutoffTime then
+            table.remove(energyHistory, i)
+        else
+            break -- entries are in chronological order
+        end
+    end
+end
+
+-- Calculate average EU usage rate (EU/second) over the tracked period
+local function calculateUsageRate()
+    if #energyHistory < 2 then
+        return 0, "insufficient data"
+    end
+    
+    local oldest = energyHistory[1]
+    local newest = energyHistory[#energyHistory]
+    
+    local timeDiff = newest.timestamp - oldest.timestamp
+    if timeDiff <= 0 then
+        return 0, "insufficient time"
+    end
+    
+    local energyDiff = newest.currentEnergy - oldest.currentEnergy
+    local rate = energyDiff / timeDiff
+    
+    return rate, "ok"
+end
+
+-- Format EU values with appropriate units
+local function formatEU(euValue)
+    local absValue = math.abs(euValue)
+    if absValue >= 1000000000 then
+        return string.format("%.2f GEU", euValue / 1000000000)
+    elseif absValue >= 1000000 then
+        return string.format("%.2f MEU", euValue / 1000000)
+    elseif absValue >= 1000 then
+        return string.format("%.2f kEU", euValue / 1000)
+    else
+        return string.format("%.0f EU", euValue)
+    end
+end
+
+-- Format time duration in a readable format
+local function formatTime(seconds)
+    if seconds <= 0 then
+        return "N/A"
+    end
+    
+    if seconds < 60 then
+        return string.format("%.0fs", seconds)
+    elseif seconds < 3600 then
+        local minutes = math.floor(seconds / 60)
+        local remainingSeconds = seconds % 60
+        return string.format("%dm %ds", minutes, remainingSeconds)
+    elseif seconds < 86400 then
+        local hours = math.floor(seconds / 3600)
+        local minutes = math.floor((seconds % 3600) / 60)
+        return string.format("%dh %dm", hours, minutes)
+    else
+        local days = math.floor(seconds / 86400)
+        local hours = math.floor((seconds % 86400) / 3600)
+        return string.format("%dd %dh", days, hours)
+    end
+end
+
+-- Calculate time estimates based on current usage rate
+local function getTimeEstimates(currentEnergy, maxEnergy, usageRate)
+    local timeToEmpty, timeToFull = nil, nil
+    
+    if usageRate < -100 then -- Losing energy (threshold to avoid noise)
+        timeToEmpty = currentEnergy / (-usageRate)
+    elseif usageRate > 100 then -- Gaining energy (threshold to avoid noise)
+        local remainingCapacity = maxEnergy - currentEnergy
+        timeToFull = remainingCapacity / usageRate
+    end
+    
+    return timeToEmpty, timeToFull
+end
+
 -- Set redstone signal state
 local function setRedstoneSignal(active)
     if not redstoneIO then return end
@@ -317,14 +414,14 @@ end
 -- Clear screen with background
 local function clearScreen()
     gpu.setBackground(0x000000) -- Black background
-    gpu.setForeground(0xFFFFFF) -- White text
+    gpu.setForeground(0x00A6FF) -- Light blue text
     gpu.fill(1, 1, screenWidth, screenHeight, " ")
 end
 
 -- Draw a progress bar
 local function drawProgressBar(x, y, width, height, percent, color)
     -- Draw border
-    gpu.setForeground(0xFFFFFF)
+    gpu.setForeground(0x00A6FF)
     gpu.fill(x, y, width, 1, "═")
     gpu.fill(x, y + height - 1, width, 1, "═")
     gpu.fill(x, y, 1, height, "║")
@@ -359,16 +456,16 @@ local function getEnergyColor(percent)
     if percent <= LOW_THRESHOLD then
         return 0xFF0000 -- Red (critical)
     elseif percent <= 0.5 then
-        return 0xFFFF00 -- Yellow (low)
+        return 0xFF00FF -- Magenta (low)
     elseif percent <= HIGH_THRESHOLD then
         return 0x00FF00 -- Green (good)
     else
-        return 0x00FFFF -- Cyan (full)
+        return 0x00FF00 -- Green (above 90%)
     end
 end
 
 -- Draw the main GUI
-local function drawGUI(energyPercent)
+local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     clearScreen()
     
     -- Title
@@ -378,12 +475,12 @@ local function drawGUI(energyPercent)
     gpu.set(titleX, 2, title)
     
     -- Current time
-    gpu.setForeground(0xFFFFFF)
+    gpu.setForeground(0x00A6FF)
     local timeStr = os.date("%Y-%m-%d %H:%M:%S")
     gpu.set(screenWidth - unicode.len(timeStr), 2, timeStr)
     
     -- Energy section
-    gpu.setForeground(0xFFFF00)
+    gpu.setForeground(0xFF00FF)
     gpu.set(3, 5, "ENERGY LEVEL:")
     
     -- Progress bar
@@ -396,7 +493,7 @@ local function drawGUI(energyPercent)
     drawProgressBar(barX, barY, barWidth, barHeight, energyPercent, energyColor)
     
     -- Energy percentage text
-    gpu.setForeground(0xFFFFFF)
+    gpu.setForeground(0x00A6FF)
     local percentText = string.format("%.1f%%", energyPercent * 100)
     local percentX = math.floor((screenWidth - unicode.len(percentText)) / 2) + 1
     gpu.set(percentX, barY + 1, percentText)
@@ -410,25 +507,61 @@ local function drawGUI(energyPercent)
     local highPos = math.floor(barX + (barWidth - 2) * HIGH_THRESHOLD) + 1
     gpu.set(highPos, barY + barHeight + 1, "90% ↑")
     
-    -- Status section
-    gpu.setForeground(0xFFFF00)
-    gpu.set(3, 13, "REDSTONE STATUS:")
+    -- Energy details and usage analysis
+    gpu.setForeground(0x00A6FF)
+    gpu.set(3, barY + barHeight + 3, "Current: " .. formatEU(currentEnergy) .. " / " .. formatEU(maxEnergy))
+    
+    -- Calculate and display usage information
+    local usageRate, status = calculateUsageRate()
+    local timeToEmpty, timeToFull = getTimeEstimates(currentEnergy, maxEnergy, usageRate)
+    
+    if status == "ok" and math.abs(usageRate) > 100 then
+        if usageRate < 0 then
+            -- Losing energy
+            gpu.setForeground(0xFF8080) -- Light red
+            gpu.set(3, barY + barHeight + 4, "Usage: " .. formatEU(-usageRate) .. "/s (consuming)")
+            if timeToEmpty then
+                gpu.setForeground(0xFF0000) -- Red for warning
+                gpu.set(3, barY + barHeight + 5, "Time to empty: " .. formatTime(timeToEmpty))
+            end
+        else
+            -- Gaining energy
+            gpu.setForeground(0x80FF80) -- Light green
+            gpu.set(3, barY + barHeight + 4, "Charge: " .. formatEU(usageRate) .. "/s (charging)")
+            if timeToFull then
+                gpu.setForeground(0x00FF00) -- Green
+                gpu.set(3, barY + barHeight + 5, "Time to full: " .. formatTime(timeToFull))
+            end
+        end
+    else
+        gpu.setForeground(0x808080) -- Gray
+        if status == "insufficient data" then
+            gpu.set(3, barY + barHeight + 4, "Analyzing energy usage... (" .. #energyHistory .. "/2 samples)")
+        else
+            gpu.set(3, barY + barHeight + 4, "Energy stable (rate: " .. formatEU(usageRate) .. "/s)")
+        end
+    end
+    
+    -- Status section (moved down to accommodate new info)
+    local statusY = barY + barHeight + 7
+    gpu.setForeground(0xFF00FF)
+    gpu.set(3, statusY, "REDSTONE STATUS:")
     
     local statusColor = isRedstoneActive and 0xFF0000 or 0x808080
     local statusText = isRedstoneActive and "  ACTIVE  " or " INACTIVE "
     gpu.setForeground(0x000000)
     gpu.setBackground(statusColor)
-    gpu.set(21, 13, statusText)
+    gpu.set(21, statusY, statusText)
     gpu.setBackground(0x000000)
     
     -- Control information
     gpu.setForeground(0x808080)
-    gpu.set(3, 15, "Control Logic: Enable at <20%, Disable at >90%")
-    gpu.set(3, 16, "Check Interval: " .. CHECK_INTERVAL .. " seconds")
-    gpu.set(3, 17, "Redstone Side: " .. REDSTONE_SIDE)
+    gpu.set(3, statusY + 2, "Control Logic: Enable at <20%, Disable at >90%")
+    gpu.set(3, statusY + 3, "Check Interval: " .. CHECK_INTERVAL .. " seconds")
+    gpu.set(3, statusY + 4, "Redstone Side: " .. REDSTONE_SIDE)
     
     -- Instructions
-    gpu.setForeground(0x00FF00)
+    gpu.setForeground(0x00A6FF)
     gpu.set(3, screenHeight - 1, "Press Ctrl+C to stop the program")
 end
 
@@ -438,7 +571,18 @@ local function displayStatus(energyPercent)
     local stateDisplay = isRedstoneActive and "🔴 ON" or "⚫ OFF"
     local timeDisplay = os.date("%H:%M:%S")
     
-    print(string.format("[%s] Energy: %s | Redstone: %s", timeDisplay, energyDisplay, stateDisplay))
+    -- Get usage information
+    local usageInfo = ""
+    local usageRate, status = calculateUsageRate()
+    if status == "ok" and math.abs(usageRate) > 100 then
+        if usageRate < 0 then
+            usageInfo = " | Usage: " .. formatEU(-usageRate) .. "/s"
+        else
+            usageInfo = " | Charge: " .. formatEU(usageRate) .. "/s"
+        end
+    end
+    
+    print(string.format("[%s] Energy: %s | Redstone: %s%s", timeDisplay, energyDisplay, stateDisplay, usageInfo))
 end
 
 --[[
@@ -486,9 +630,38 @@ local function main()
         if success then
             updatePowerControl(energyPercent)
             
+            -- Get raw energy values for usage tracking and display
+            local currentEnergy, maxEnergy = 0, 0
+            if energyStorage then
+                local safeCall = function(methodName)
+                    if energyStorage[methodName] then
+                        local callSuccess, result = pcall(function() return energyStorage[methodName]() end)
+                        if callSuccess and result ~= nil then
+                            return result
+                        end
+                    end
+                    return nil
+                end
+                
+                -- Try to get raw energy values using the same methods as getEnergyLevel
+                local storedEU = safeCall("getEUStored")
+                local capacityEU = safeCall("getEUCapacity")
+                if storedEU and capacityEU then
+                    currentEnergy = storedEU
+                    maxEnergy = capacityEU
+                else
+                    -- Fallback: calculate from percentage if direct methods fail
+                    currentEnergy = energyPercent * 1000000000 -- Assume typical capacity for calculation
+                    maxEnergy = 1000000000
+                end
+            end
+            
+            -- Update energy history for usage tracking
+            updateEnergyHistory(currentEnergy, maxEnergy)
+            
             -- Update GUI if available, otherwise fall back to console
             if gpu and screen then
-                drawGUI(energyPercent)
+                drawGUI(energyPercent, currentEnergy, maxEnergy)
             else
                 displayStatus(energyPercent)
             end
