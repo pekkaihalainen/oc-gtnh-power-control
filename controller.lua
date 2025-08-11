@@ -6,12 +6,50 @@ local component = require("component")
 local event = require("event")
 local os = require("os")
 local unicode = require("unicode")
+local filesystem = require("filesystem")
 
 -- Configuration
 local CHECK_INTERVAL = 5 -- seconds between energy checks
 local LOW_THRESHOLD = 0.20 -- 20% - enable redstone signal
 local HIGH_THRESHOLD = 0.90 -- 90% - disable redstone signal
 local REDSTONE_SIDE = 1 -- redstone I/O side (1-6, or use sides.bottom etc)
+
+-- Component Addresses (Set these to your specific component addresses)
+-- To find component addresses, run: controller list
+-- or use: component.list() in lua console
+local ENERGY_DETECTOR_ADDRESS = "your-energy-detector-address-here" -- GT Energy Detector address
+local REDSTONE_IO_ADDRESS = "your-redstone-io-address-here" -- Redstone I/O address
+local GPU_ADDRESS = "your-gpu-address-here" -- GPU address (optional, will auto-detect if empty)
+local SCREEN_ADDRESS = "your-screen-address-here" -- Screen address (optional, will auto-detect if empty)
+
+-- Load configuration from external file if it exists
+if filesystem.exists("/config.lua") then
+    print("📁 Loading configuration from config.lua...")
+    local configFile, err = loadfile("/config.lua")
+    if configFile then
+        local config = configFile()
+        if config then
+            -- Override defaults with config file values
+            ENERGY_DETECTOR_ADDRESS = config.ENERGY_DETECTOR_ADDRESS or ENERGY_DETECTOR_ADDRESS
+            REDSTONE_IO_ADDRESS = config.REDSTONE_IO_ADDRESS or REDSTONE_IO_ADDRESS
+            GPU_ADDRESS = config.GPU_ADDRESS or GPU_ADDRESS
+            SCREEN_ADDRESS = config.SCREEN_ADDRESS or SCREEN_ADDRESS
+            CHECK_INTERVAL = config.CHECK_INTERVAL or CHECK_INTERVAL
+            LOW_THRESHOLD = config.LOW_THRESHOLD or LOW_THRESHOLD
+            HIGH_THRESHOLD = config.HIGH_THRESHOLD or HIGH_THRESHOLD
+            REDSTONE_SIDE = config.REDSTONE_SIDE or REDSTONE_SIDE
+            print("✅ Configuration loaded successfully!")
+        else
+            print("⚠️  Warning: config.lua returned no data, using defaults")
+        end
+    else
+        print("⚠️  Warning: Could not load config.lua: " .. tostring(err))
+    end
+else
+    print("💡 No config.lua found - using inline configuration")
+    print("💡 Run 'controller list' to find component addresses")
+    print("💡 See config_example.lua for external configuration setup")
+end
 
 -- Global state
 local isRedstoneActive = false
@@ -21,46 +59,63 @@ local gpu = nil
 local screen = nil
 local screenWidth, screenHeight = 0, 0
 
+-- Helper function to get component by address with fallback
+local function getComponentByAddress(address, componentType, fallbackType)
+    if address and address ~= "" and address ~= "your-" .. componentType .. "-address-here" then
+        if component.proxy(address) then
+            return component.proxy(address)
+        else
+            error(string.format("✗ Component not found at address: %s", address))
+        end
+    else
+        -- Fallback to automatic detection
+        if component.isAvailable(fallbackType) then
+            return component[fallbackType]
+        else
+            error(string.format("✗ No %s found! Please set %s_ADDRESS or connect component.", componentType, componentType:upper()))
+        end
+    end
+end
+
 -- Initialize components
 local function initializeComponents()
     print("Initializing components...")
+    print("Note: Run 'component.list()' to find component addresses")
+    print("")
     
-    -- Find GPU and screen
-    if component.isAvailable("gpu") then
-        gpu = component.gpu
-        print("✓ Found GPU")
+    -- Initialize GPU
+    gpu = getComponentByAddress(GPU_ADDRESS, "gpu", "gpu")
+    print("✓ Found GPU: " .. gpu.address:sub(1, 8) .. "...")
+    
+    -- Initialize Screen
+    screen = getComponentByAddress(SCREEN_ADDRESS, "screen", "screen")
+    gpu.bind(screen.address)
+    screenWidth, screenHeight = gpu.getResolution()
+    print(string.format("✓ Found Screen (%dx%d): %s...", screenWidth, screenHeight, screen.address:sub(1, 8)))
+    
+    -- Initialize Energy Detector
+    if ENERGY_DETECTOR_ADDRESS and ENERGY_DETECTOR_ADDRESS ~= "your-energy-detector-address-here" then
+        energyDetector = component.proxy(ENERGY_DETECTOR_ADDRESS)
+        if not energyDetector then
+            error("✗ Energy detector not found at address: " .. ENERGY_DETECTOR_ADDRESS)
+        end
+        print("✓ Found Energy Detector: " .. ENERGY_DETECTOR_ADDRESS:sub(1, 8) .. "...")
     else
-        error("✗ No GPU found! Please install a graphics card.")
+        error("✗ Please set ENERGY_DETECTOR_ADDRESS in the configuration!\nRun 'component.list()' to find your energy detector address.")
     end
     
-    if component.isAvailable("screen") then
-        screen = component.screen
-        gpu.bind(screen.address)
-        screenWidth, screenHeight = gpu.getResolution()
-        print(string.format("✓ Found Screen (%dx%d)", screenWidth, screenHeight))
+    -- Initialize Redstone I/O
+    if REDSTONE_IO_ADDRESS and REDSTONE_IO_ADDRESS ~= "your-redstone-io-address-here" then
+        redstoneIO = component.proxy(REDSTONE_IO_ADDRESS)
+        if not redstoneIO then
+            error("✗ Redstone I/O not found at address: " .. REDSTONE_IO_ADDRESS)
+        end
+        print("✓ Found Redstone I/O: " .. REDSTONE_IO_ADDRESS:sub(1, 8) .. "...")
     else
-        error("✗ No screen found! Please connect a screen.")
+        error("✗ Please set REDSTONE_IO_ADDRESS in the configuration!\nRun 'component.list()' to find your redstone I/O address.")
     end
     
-    -- Find energy detector (try common component names)
-    if component.isAvailable("gt_energydetector") then
-        energyDetector = component.gt_energydetector
-        print("✓ Found GT Energy Detector")
-    elseif component.isAvailable("energy_device") then
-        energyDetector = component.energy_device
-        print("✓ Found Energy Device")
-    else
-        error("✗ No energy detector found! Please connect a GT Energy Detector or compatible component.")
-    end
-    
-    -- Find redstone I/O
-    if component.isAvailable("redstone") then
-        redstoneIO = component.redstone
-        print("✓ Found Redstone I/O")
-    else
-        error("✗ No redstone I/O found! Please connect a Redstone I/O block.")
-    end
-    
+    print("")
     print("All components initialized successfully!")
     os.sleep(2) -- Give user time to read initialization messages
 end
@@ -244,6 +299,26 @@ local function displayStatus(energyPercent)
     print(string.format("[%s] Energy: %s | Redstone: %s", timeDisplay, energyDisplay, stateDisplay))
 end
 
+--[[
+HOW TO FIND COMPONENT ADDRESSES:
+
+1. Start your computer and open the Lua console
+2. Type: component.list()
+3. Look for your components in the output:
+   - Energy Detector: Look for "gt_energydetector" or similar
+   - Redstone I/O: Look for "redstone" 
+   - GPU: Look for "gpu"
+   - Screen: Look for "screen"
+
+4. Copy the full address (long string of characters) for each component
+5. Update the configuration variables above with these addresses
+
+Example addresses look like: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+You only need to set ENERGY_DETECTOR_ADDRESS and REDSTONE_IO_ADDRESS.
+GPU and Screen addresses are optional (will auto-detect if not set).
+--]]
+
 -- Main program loop
 local function main()
     print("=== Lapatronic Supercapacitor Controller ===")
@@ -311,6 +386,41 @@ local function run()
         -- Try to disable redstone on error
         pcall(setRedstoneSignal, false)
     end
+end
+
+-- Helper function to list all components (for configuration)
+local function listComponents()
+    print("=== COMPONENT DISCOVERY ===")
+    print("Available components in your system:")
+    print("")
+    
+    local components = {}
+    for address, name in component.list() do
+        if not components[name] then
+            components[name] = {}
+        end
+        table.insert(components[name], address)
+    end
+    
+    for componentType, addresses in pairs(components) do
+        print(string.format("📦 %s:", componentType))
+        for i, address in ipairs(addresses) do
+            print(string.format("   %d. %s", i, address))
+        end
+        print("")
+    end
+    
+    print("💡 Copy the full address for the components you want to use.")
+    print("💡 Update the configuration section at the top of this script.")
+    print("💡 Required: gt_energydetector (or similar) and redstone addresses")
+    print("")
+end
+
+-- Check if first argument is 'list' to show component discovery
+local args = {...}
+if args[1] == "list" or args[1] == "components" then
+    listComponents()
+    return
 end
 
 -- Start the program
