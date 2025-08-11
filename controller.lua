@@ -359,6 +359,32 @@ local function calculateUsageRate()
     return rate, "ok"
 end
 
+-- Round values to ballpark figures to reduce fluctuation display
+local function roundToBallpark(rate)
+    local absRate = math.abs(rate)
+    local sign = rate >= 0 and 1 or -1
+    
+    if absRate < 1000 then
+        -- Under 1 kEU/s: round to nearest 10 EU/s
+        return sign * math.floor((absRate + 5) / 10) * 10
+    elseif absRate < 10000 then
+        -- Under 10 kEU/s: round to nearest 100 EU/s  
+        return sign * math.floor((absRate + 50) / 100) * 100
+    elseif absRate < 100000 then
+        -- Under 100 kEU/s: round to nearest 1 kEU/s
+        return sign * math.floor((absRate + 500) / 1000) * 1000
+    elseif absRate < 1000000 then
+        -- Under 1 MEU/s: round to nearest 10 kEU/s
+        return sign * math.floor((absRate + 5000) / 10000) * 10000
+    elseif absRate < 10000000 then
+        -- Under 10 MEU/s: round to nearest 100 kEU/s
+        return sign * math.floor((absRate + 50000) / 100000) * 100000
+    else
+        -- Above 10 MEU/s: round to nearest 1 MEU/s
+        return sign * math.floor((absRate + 500000) / 1000000) * 1000000
+    end
+end
+
 -- Update usage rate history for smoothing
 local function updateUsageRateHistory(rate, status)
     if status == "ok" then
@@ -403,32 +429,6 @@ local function getSmoothedUsageRate()
     local ballparkRate = roundToBallpark(smoothedRate)
     
     return ballparkRate, "ok"
-end
-
--- Round values to ballpark figures to reduce fluctuation display
-local function roundToBallpark(rate)
-    local absRate = math.abs(rate)
-    local sign = rate >= 0 and 1 or -1
-    
-    if absRate < 1000 then
-        -- Under 1 kEU/s: round to nearest 10 EU/s
-        return sign * math.floor((absRate + 5) / 10) * 10
-    elseif absRate < 10000 then
-        -- Under 10 kEU/s: round to nearest 100 EU/s  
-        return sign * math.floor((absRate + 50) / 100) * 100
-    elseif absRate < 100000 then
-        -- Under 100 kEU/s: round to nearest 1 kEU/s
-        return sign * math.floor((absRate + 500) / 1000) * 1000
-    elseif absRate < 1000000 then
-        -- Under 1 MEU/s: round to nearest 10 kEU/s
-        return sign * math.floor((absRate + 5000) / 10000) * 10000
-    elseif absRate < 10000000 then
-        -- Under 10 MEU/s: round to nearest 100 kEU/s
-        return sign * math.floor((absRate + 50000) / 100000) * 100000
-    else
-        -- Above 10 MEU/s: round to nearest 1 MEU/s
-        return sign * math.floor((absRate + 500000) / 1000000) * 1000000
-    end
 end
 
 -- Format EU values with appropriate units
