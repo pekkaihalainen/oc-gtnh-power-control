@@ -137,39 +137,72 @@ local function initializeComponents()
     os.sleep(2) -- Give user time to read initialization messages
 end
 
+-- Debug flag for verbose energy logging
+local DEBUG_ENERGY = false
+
 -- Get current energy level as percentage (0.0 to 1.0)
 local function getEnergyLevel()
     if not energyStorage then return 0 end
     
     -- Try different methods to get energy data from the energy storage adapter
     local currentEnergy, maxEnergy = 0, 0
+    local methodUsed = "none"
     
     -- Method 1: Standard GT energy methods
     if energyStorage.getEnergyStored and energyStorage.getMaxEnergyStored then
         currentEnergy = energyStorage.getEnergyStored()
         maxEnergy = energyStorage.getMaxEnergyStored()
+        methodUsed = "getEnergyStored/getMaxEnergyStored"
+        
+        if DEBUG_ENERGY then
+            print(string.format("🔍 Method 1 (GT Energy): current=%s, max=%s", tostring(currentEnergy), tostring(maxEnergy)))
+        end
+        
     -- Method 2: Alternative energy methods
     elseif energyStorage.getStored and energyStorage.getCapacity then
         currentEnergy = energyStorage.getStored()
         maxEnergy = energyStorage.getCapacity()
+        methodUsed = "getStored/getCapacity"
+        
+        if DEBUG_ENERGY then
+            print(string.format("🔍 Method 2 (Alternative): current=%s, max=%s", tostring(currentEnergy), tostring(maxEnergy)))
+        end
+        
     -- Method 3: Try energy tank methods (some GT blocks use tank-like systems)
     elseif energyStorage.tank and type(energyStorage.tank) == "function" then
-        local tankInfo = energyStorage.tank()
-        if tankInfo and tankInfo.amount and tankInfo.capacity then
+        local success, tankInfo = pcall(energyStorage.tank)
+        if success and tankInfo and tankInfo.amount and tankInfo.capacity then
             currentEnergy = tankInfo.amount
             maxEnergy = tankInfo.capacity
+            methodUsed = "tank() method"
+            
+            if DEBUG_ENERGY then
+                print(string.format("🔍 Method 3 (Tank): current=%s, max=%s", tostring(currentEnergy), tostring(maxEnergy)))
+            end
         else
-            print("⚠ Warning: Tank method returned invalid data")
+            if DEBUG_ENERGY then
+                print("🔍 Method 3 (Tank): Failed or returned invalid data")
+                print("  Tank info: " .. tostring(tankInfo))
+            end
             return 0
         end
+        
     -- Method 4: Try getting tank info by index (some energy storage adapters use indexed access)
     elseif energyStorage.getTankInfo and type(energyStorage.getTankInfo) == "function" then
-        local tankInfo = energyStorage.getTankInfo(1) -- First tank
-        if tankInfo and tankInfo[1] then
+        local success, tankInfo = pcall(energyStorage.getTankInfo, 1)
+        if success and tankInfo and tankInfo[1] then
             currentEnergy = tankInfo[1].amount or 0
             maxEnergy = tankInfo[1].capacity or 0
+            methodUsed = "getTankInfo(1)"
+            
+            if DEBUG_ENERGY then
+                print(string.format("🔍 Method 4 (getTankInfo): current=%s, max=%s", tostring(currentEnergy), tostring(maxEnergy)))
+            end
         else
-            print("⚠ Warning: getTankInfo returned no data")
+            if DEBUG_ENERGY then
+                print("🔍 Method 4 (getTankInfo): Failed or returned no data")
+                print("  Tank info: " .. tostring(tankInfo))
+            end
             return 0
         end
     else
@@ -181,15 +214,31 @@ local function getEnergyLevel()
                 print("  - " .. methodName .. "()")
             end
         end
+        print("")
+        print("💡 Try running 'controller test-energy' to test all methods")
         return 0
+    end
+    
+    if DEBUG_ENERGY then
+        print(string.format("🔍 Using method: %s", methodUsed))
+        print(string.format("🔍 Raw values: current=%s, max=%s", tostring(currentEnergy), tostring(maxEnergy)))
     end
     
     if maxEnergy == 0 then 
         print("⚠ Warning: Maximum energy capacity is 0")
+        if DEBUG_ENERGY then
+            print("🔍 This usually means the method isn't returning valid data")
+        end
         return 0 
     end
     
-    return currentEnergy / maxEnergy
+    local percentage = currentEnergy / maxEnergy
+    
+    if DEBUG_ENERGY then
+        print(string.format("🔍 Calculated percentage: %.3f (%.1f%%)", percentage, percentage * 100))
+    end
+    
+    return percentage
 end
 
 -- Set redstone signal state
@@ -470,6 +519,156 @@ local function listComponents()
     print("")
 end
 
+-- Helper function to test energy methods (for debugging energy issues)
+local function testEnergyMethods()
+    print("=== ENERGY METHOD TESTING ===")
+    
+    if not energyStorage then
+        print("❌ No energy storage adapter configured!")
+        print("Please set ENERGY_STORAGE_ADDRESS and restart.")
+        return
+    end
+    
+    print("Testing all available energy methods on your energy storage adapter...")
+    print("Address: " .. ENERGY_STORAGE_ADDRESS:sub(1, 8) .. "...")
+    print("")
+    
+    local methodsTested = 0
+    local workingMethods = 0
+    
+    -- Test Method 1: GT Energy methods
+    if energyStorage.getEnergyStored and energyStorage.getMaxEnergyStored then
+        methodsTested = methodsTested + 1
+        print("🧪 Testing Method 1: getEnergyStored/getMaxEnergyStored")
+        local success1, current = pcall(energyStorage.getEnergyStored)
+        local success2, max = pcall(energyStorage.getMaxEnergyStored)
+        
+        if success1 and success2 then
+            print(string.format("   ✅ Current Energy: %s", tostring(current)))
+            print(string.format("   ✅ Max Energy: %s", tostring(max)))
+            if current and max and max > 0 then
+                print(string.format("   ✅ Percentage: %.1f%%", (current/max)*100))
+                workingMethods = workingMethods + 1
+            else
+                print("   ❌ Invalid values returned")
+            end
+        else
+            print("   ❌ Method calls failed")
+            print("   Error current: " .. tostring(current))
+            print("   Error max: " .. tostring(max))
+        end
+        print("")
+    end
+    
+    -- Test Method 2: Alternative methods
+    if energyStorage.getStored and energyStorage.getCapacity then
+        methodsTested = methodsTested + 1
+        print("🧪 Testing Method 2: getStored/getCapacity")
+        local success1, current = pcall(energyStorage.getStored)
+        local success2, max = pcall(energyStorage.getCapacity)
+        
+        if success1 and success2 then
+            print(string.format("   ✅ Current Stored: %s", tostring(current)))
+            print(string.format("   ✅ Capacity: %s", tostring(max)))
+            if current and max and max > 0 then
+                print(string.format("   ✅ Percentage: %.1f%%", (current/max)*100))
+                workingMethods = workingMethods + 1
+            else
+                print("   ❌ Invalid values returned")
+            end
+        else
+            print("   ❌ Method calls failed")
+            print("   Error current: " .. tostring(current))
+            print("   Error max: " .. tostring(max))
+        end
+        print("")
+    end
+    
+    -- Test Method 3: Tank method
+    if energyStorage.tank and type(energyStorage.tank) == "function" then
+        methodsTested = methodsTested + 1
+        print("🧪 Testing Method 3: tank()")
+        local success, tankInfo = pcall(energyStorage.tank)
+        
+        if success then
+            print("   ✅ Tank method executed successfully")
+            print("   Tank Info: " .. tostring(tankInfo))
+            if tankInfo and type(tankInfo) == "table" then
+                print("   Tank fields:")
+                for key, value in pairs(tankInfo) do
+                    print(string.format("     %s: %s", tostring(key), tostring(value)))
+                end
+                if tankInfo.amount and tankInfo.capacity and tankInfo.capacity > 0 then
+                    print(string.format("   ✅ Percentage: %.1f%%", (tankInfo.amount/tankInfo.capacity)*100))
+                    workingMethods = workingMethods + 1
+                end
+            end
+        else
+            print("   ❌ Tank method failed")
+            print("   Error: " .. tostring(tankInfo))
+        end
+        print("")
+    end
+    
+    -- Test Method 4: getTankInfo
+    if energyStorage.getTankInfo and type(energyStorage.getTankInfo) == "function" then
+        methodsTested = methodsTested + 1
+        print("🧪 Testing Method 4: getTankInfo(1)")
+        local success, tankInfo = pcall(energyStorage.getTankInfo, 1)
+        
+        if success then
+            print("   ✅ getTankInfo method executed successfully")
+            print("   Tank Info: " .. tostring(tankInfo))
+            if tankInfo and type(tankInfo) == "table" and tankInfo[1] then
+                print("   Tank[1] fields:")
+                for key, value in pairs(tankInfo[1]) do
+                    print(string.format("     %s: %s", tostring(key), tostring(value)))
+                end
+                local amount = tankInfo[1].amount
+                local capacity = tankInfo[1].capacity
+                if amount and capacity and capacity > 0 then
+                    print(string.format("   ✅ Percentage: %.1f%%", (amount/capacity)*100))
+                    workingMethods = workingMethods + 1
+                end
+            end
+        else
+            print("   ❌ getTankInfo method failed")
+            print("   Error: " .. tostring(tankInfo))
+        end
+        print("")
+    end
+    
+    -- List all available methods
+    print("🔍 All available methods on energy storage adapter:")
+    for methodName, func in pairs(energyStorage) do
+        if type(func) == "function" then
+            print("   - " .. methodName .. "()")
+        end
+    end
+    print("")
+    
+    -- Summary
+    print("📊 SUMMARY:")
+    print(string.format("   Methods tested: %d", methodsTested))
+    print(string.format("   Working methods: %d", workingMethods))
+    
+    if workingMethods == 0 then
+        print("")
+        print("🚨 NO WORKING ENERGY METHODS FOUND!")
+        print("Possible issues:")
+        print("   1. Energy storage adapter not adjacent to supercapacitor controller")
+        print("   2. Wrong component address")
+        print("   3. Supercapacitor controller not compatible with standard methods")
+        print("   4. Try different adapter placement/orientation")
+    else
+        print("")
+        print("✅ Found working energy methods! The controller should work.")
+        print("If you're still seeing 0%, try enabling debug mode:")
+        print("   Run: controller debug-energy")
+    end
+    print("")
+end
+
 -- Helper function to show file listing (for debugging config issues)
 local function showFiles()
     print("=== FILE SYSTEM DEBUG ===")
@@ -506,17 +705,39 @@ if args[1] == "list" or args[1] == "components" then
 elseif args[1] == "files" or args[1] == "debug" then
     showFiles()
     return
+elseif args[1] == "test-energy" then
+    -- Initialize components first for energy testing
+    pcall(initializeComponents)
+    testEnergyMethods()
+    return
+elseif args[1] == "debug-energy" then
+    -- Enable debug mode and run one energy check
+    DEBUG_ENERGY = true
+    print("🔍 ENERGY DEBUG MODE ENABLED")
+    print("Initializing components...")
+    pcall(initializeComponents)
+    print("Testing energy reading with debug output:")
+    local level = getEnergyLevel()
+    print(string.format("Final result: %.1f%%", level * 100))
+    return
 elseif args[1] == "help" then
     print("=== CONTROLLER HELP ===")
     print("Usage: controller [command]")
     print("")
     print("Commands:")
-    print("  (no args)     - Start the power controller")
-    print("  list          - Show available components and addresses")
-    print("  components    - Same as 'list'")
-    print("  files         - Show current directory files and config search")
-    print("  debug         - Same as 'files'")
-    print("  help          - Show this help message")
+    print("  (no args)       - Start the power controller")
+    print("  list            - Show available components and addresses")
+    print("  components      - Same as 'list'")
+    print("  files           - Show current directory files and config search")
+    print("  debug           - Same as 'files'")
+    print("  test-energy     - Test all energy reading methods on your adapter")
+    print("  debug-energy    - Run energy reading with detailed debug output")
+    print("  help            - Show this help message")
+    print("")
+    print("Energy Troubleshooting:")
+    print("  1. Run 'controller test-energy' to see which methods work")
+    print("  2. Run 'controller debug-energy' for verbose energy reading")
+    print("  3. Check adapter placement (must be adjacent to supercapacitor)")
     print("")
     return
 end
