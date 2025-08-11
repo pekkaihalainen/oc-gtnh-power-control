@@ -609,57 +609,14 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     gpu.setForeground(0x00A6FF)
     gpu.set(3, barY + barHeight + 3, "Current: " .. formatEU(currentEnergy) .. " / " .. formatEU(maxEnergy))
     
-    -- Calculate and display usage information
+    -- Calculate variables for display
     local usageRate, status = calculateUsageRate()
     local timeToEmpty, timeToFull = getTimeEstimates(currentEnergy, maxEnergy, usageRate)
     local euIn, euOut = getEUInOutRates()
     
     local currentLine = barY + barHeight + 4
     
-    if status == "ok" then
-        if usageRate < -100 then
-            -- Losing energy significantly
-            gpu.setForeground(0xFF8080) -- Light red
-            gpu.set(3, currentLine, "Usage: " .. formatEU(-usageRate) .. "/s (consuming)")
-            currentLine = currentLine + 1
-            if timeToEmpty then
-                gpu.setForeground(0xFF0000) -- Red for warning
-                gpu.set(3, currentLine, "Time to empty: " .. formatTime(timeToEmpty))
-                currentLine = currentLine + 1
-            end
-        elseif usageRate > 100 then
-            -- Gaining energy significantly
-            gpu.setForeground(0x80FF80) -- Light green
-            gpu.set(3, currentLine, "Charge: " .. formatEU(usageRate) .. "/s (charging)")
-            currentLine = currentLine + 1
-            if timeToFull then
-                gpu.setForeground(0x00FF00) -- Green
-                gpu.set(3, currentLine, "Time to full: " .. formatTime(timeToFull))
-                currentLine = currentLine + 1
-            end
-        else
-            -- Small changes or stable - always show the rate
-            gpu.setForeground(0x808080) -- Gray
-            if usageRate < 0 then
-                gpu.set(3, currentLine, "Usage: " .. formatEU(-usageRate) .. "/s (consuming slowly)")
-            elseif usageRate > 0 then
-                gpu.set(3, currentLine, "Charge: " .. formatEU(usageRate) .. "/s (charging slowly)")
-            else
-                gpu.set(3, currentLine, "Energy stable (0 EU/s)")
-            end
-            currentLine = currentLine + 1
-        end
-    else
-        gpu.setForeground(0x808080) -- Gray
-        if status == "insufficient data" then
-            gpu.set(3, currentLine, "Analyzing energy usage... (" .. #energyHistory .. "/2 samples)")
-        else
-            gpu.set(3, currentLine, "Energy rate: " .. formatEU(usageRate) .. "/s")
-        end
-        currentLine = currentLine + 1
-    end
-    
-    -- Always display EU input/output rates
+    -- Always display EU input/output rates first
     gpu.setForeground(0x00A6FF) -- Light blue for input
     local euInText = "Average EU In: "
     if euIn and euIn ~= 0 then
@@ -683,6 +640,53 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     end
     gpu.set(3, currentLine, euOutText)
     currentLine = currentLine + 1
+    
+    -- Add empty line
+    currentLine = currentLine + 1
+    
+    -- Display usage information after EU rates
+    if status == "ok" then
+        if usageRate < -100 then
+            -- Losing energy significantly
+            gpu.setForeground(0xFF8080) -- Light red
+            gpu.set(3, currentLine, "Usage: " .. formatEU(-usageRate) .. "/s (consuming)")
+            currentLine = currentLine + 1
+            if timeToEmpty then
+                gpu.setForeground(0xFF0000) -- Red for warning
+                gpu.set(3, currentLine, "Time to empty: " .. formatTime(timeToEmpty))
+                currentLine = currentLine + 1
+            end
+        elseif usageRate > 100 then
+            -- Gaining energy significantly
+            gpu.setForeground(0x80FF80) -- Light green
+            gpu.set(3, currentLine, "Charge: " .. formatEU(usageRate) .. "/s (charging)")
+            currentLine = currentLine + 1
+            if timeToFull then
+                gpu.setForeground(0x00FF00) -- Green
+                gpu.set(3, currentLine, "Time to full: " .. formatTime(timeToFull))
+                currentLine = currentLine + 1
+            end
+        else
+            -- Small changes or stable - always show as charging
+            gpu.setForeground(0x808080) -- Gray
+            if usageRate < 0 then
+                gpu.set(3, currentLine, "Usage: " .. formatEU(-usageRate) .. "/s (consuming slowly)")
+            elseif usageRate > 0 then
+                gpu.set(3, currentLine, "Charge: " .. formatEU(usageRate) .. "/s (charging slowly)")
+            else
+                gpu.set(3, currentLine, "Charging: 0 EU/s")
+            end
+            currentLine = currentLine + 1
+        end
+    else
+        gpu.setForeground(0x808080) -- Gray
+        if status == "insufficient data" then
+            gpu.set(3, currentLine, "Analyzing energy usage... (" .. #energyHistory .. "/2 samples)")
+        else
+            gpu.set(3, currentLine, "Energy rate: " .. formatEU(usageRate) .. "/s")
+        end
+        currentLine = currentLine + 1
+    end
     
     -- Status section (positioned after energy info)
     local statusY = currentLine + 1
@@ -731,7 +735,7 @@ local function displayStatus(energyPercent)
         elseif usageRate > 0 then
             usageInfo = " | Charge: " .. formatEU(usageRate) .. "/s"
         else
-            usageInfo = " | Stable: 0 EU/s"
+            usageInfo = " | Charging: 0 EU/s"
         end
     elseif status == "insufficient data" then
         usageInfo = " | Analyzing..."
