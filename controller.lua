@@ -519,6 +519,71 @@ local function listComponents()
     print("")
 end
 
+-- Helper function to inspect adapter connectivity
+local function inspectAdapter()
+    print("=== ADAPTER CONNECTIVITY INSPECTION ===")
+    
+    if not ENERGY_STORAGE_ADDRESS or ENERGY_STORAGE_ADDRESS == "your-energy-storage-address-here" then
+        print("❌ ENERGY_STORAGE_ADDRESS not configured!")
+        print("Please set your adapter address in the configuration.")
+        return false
+    end
+    
+    print("Checking adapter at address: " .. ENERGY_STORAGE_ADDRESS)
+    print("")
+    
+    -- Check if component exists
+    if not component.proxy(ENERGY_STORAGE_ADDRESS) then
+        print("❌ COMPONENT NOT FOUND!")
+        print("The component at address " .. ENERGY_STORAGE_ADDRESS .. " doesn't exist.")
+        print("")
+        print("Run 'controller list' to see available components.")
+        print("Make sure you copied the correct adapter address.")
+        return false
+    end
+    
+    local adapter = component.proxy(ENERGY_STORAGE_ADDRESS)
+    print("✅ Component found!")
+    print("Component type: " .. (adapter.type or "unknown"))
+    print("")
+    
+    -- List all methods/fields available on the adapter
+    print("🔍 All available methods and fields:")
+    local methodCount = 0
+    local fieldCount = 0
+    
+    for name, value in pairs(adapter) do
+        if type(value) == "function" then
+            print("   📝 " .. name .. "() - function")
+            methodCount = methodCount + 1
+        else
+            print("   📄 " .. name .. " = " .. tostring(value) .. " - " .. type(value))
+            fieldCount = fieldCount + 1
+        end
+    end
+    
+    print("")
+    print("Summary:")
+    print("   Methods: " .. methodCount)
+    print("   Fields: " .. fieldCount)
+    print("")
+    
+    if methodCount == 0 then
+        print("🚨 NO METHODS FOUND!")
+        print("This means the adapter is not connected to any block that exposes energy methods.")
+        print("")
+        print("Troubleshooting steps:")
+        print("   1. Make sure the adapter is placed directly adjacent to the supercapacitor controller")
+        print("   2. Try placing the adapter on different sides of the supercapacitor controller")
+        print("   3. Check that the supercapacitor controller is the right type (Lapatronic)")
+        print("   4. Verify the supercapacitor controller is properly formed/multiblock complete")
+        print("   5. Try breaking and replacing the adapter")
+        return false
+    end
+    
+    return true
+end
+
 -- Helper function to test energy methods (for debugging energy issues)
 local function testEnergyMethods()
     print("=== ENERGY METHOD TESTING ===")
@@ -532,6 +597,12 @@ local function testEnergyMethods()
     print("Testing all available energy methods on your energy storage adapter...")
     print("Address: " .. ENERGY_STORAGE_ADDRESS:sub(1, 8) .. "...")
     print("")
+    
+    -- First, inspect the adapter connectivity
+    if not inspectAdapter() then
+        print("❌ Adapter inspection failed. Cannot proceed with energy testing.")
+        return
+    end
     
     local methodsTested = 0
     local workingMethods = 0
@@ -705,6 +776,10 @@ if args[1] == "list" or args[1] == "components" then
 elseif args[1] == "files" or args[1] == "debug" then
     showFiles()
     return
+elseif args[1] == "inspect-adapter" then
+    -- Just run adapter inspection without full initialization
+    inspectAdapter()
+    return
 elseif args[1] == "test-energy" then
     -- Initialize components first for energy testing
     pcall(initializeComponents)
@@ -725,19 +800,21 @@ elseif args[1] == "help" then
     print("Usage: controller [command]")
     print("")
     print("Commands:")
-    print("  (no args)       - Start the power controller")
-    print("  list            - Show available components and addresses")
-    print("  components      - Same as 'list'")
-    print("  files           - Show current directory files and config search")
-    print("  debug           - Same as 'files'")
-    print("  test-energy     - Test all energy reading methods on your adapter")
-    print("  debug-energy    - Run energy reading with detailed debug output")
-    print("  help            - Show this help message")
+    print("  (no args)         - Start the power controller")
+    print("  list              - Show available components and addresses")
+    print("  components        - Same as 'list'")
+    print("  files             - Show current directory files and config search")
+    print("  debug             - Same as 'files'")
+    print("  inspect-adapter   - Check if adapter is connected and what it sees")
+    print("  test-energy       - Test all energy reading methods on your adapter")
+    print("  debug-energy      - Run energy reading with detailed debug output")
+    print("  help              - Show this help message")
     print("")
-    print("Energy Troubleshooting:")
-    print("  1. Run 'controller test-energy' to see which methods work")
-    print("  2. Run 'controller debug-energy' for verbose energy reading")
-    print("  3. Check adapter placement (must be adjacent to supercapacitor)")
+    print("Energy Troubleshooting (if showing 0%):")
+    print("  1. Run 'controller inspect-adapter' to check adapter connectivity")
+    print("  2. Run 'controller test-energy' to see which methods work")
+    print("  3. Run 'controller debug-energy' for verbose energy reading")
+    print("  4. Check adapter placement (must be adjacent to supercapacitor)")
     print("")
     return
 end
