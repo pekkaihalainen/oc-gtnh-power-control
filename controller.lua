@@ -1,6 +1,6 @@
 -- Lapatronic Supercapacitor Power Controller
 -- Monitors energy level and controls redstone output with hysteresis
--- Enable signal at <20%, disable at >90%
+-- Enable signal at low threshold, disable at high threshold
 
 local component = require("component")
 local event = require("event")
@@ -79,6 +79,10 @@ local screenWidth, screenHeight = 0, 0
 -- Energy tracking for usage analysis
 local energyHistory = {} -- Table to store {timestamp, currentEnergy, maxEnergy}
 local HISTORY_DURATION = 15 -- Keep 15 seconds of history for 10-second usage calculations
+
+-- Usage rate smoothing for stable display
+local usageRateHistory = {} -- Store recent rate calculations for smoothing
+local RATE_HISTORY_SIZE = 4 -- Number of recent rates to average for stable display
 
 -- Helper function to get component by address with fallback
 local function getComponentByAddress(address, componentType, fallbackType)
@@ -355,6 +359,78 @@ local function calculateUsageRate()
     return rate, "ok"
 end
 
+-- Update usage rate history for smoothing
+local function updateUsageRateHistory(rate, status)
+    if status == "ok" then
+        -- Add new rate to history
+        table.insert(usageRateHistory, rate)
+        
+        -- Keep only recent rates
+        while #usageRateHistory > RATE_HISTORY_SIZE do
+            table.remove(usageRateHistory, 1)
+        end
+    end
+end
+
+-- Get smoothed usage rate for display (ballpark estimation)
+local function getSmoothedUsageRate()
+    local rawRate, status = calculateUsageRate()
+    
+    -- Update smoothing history
+    updateUsageRateHistory(rawRate, status)
+    
+    if status ~= "ok" then
+        return rawRate, status
+    end
+    
+    if #usageRateHistory == 0 then
+        return rawRate, status
+    end
+    
+    -- Calculate weighted average (more recent rates have slightly more weight)
+    local totalWeight = 0
+    local weightedSum = 0
+    
+    for i, rate in ipairs(usageRateHistory) do
+        local weight = i -- Simple linear weighting: 1, 2, 3, 4...
+        weightedSum = weightedSum + (rate * weight)
+        totalWeight = totalWeight + weight
+    end
+    
+    local smoothedRate = weightedSum / totalWeight
+    
+    -- Apply ballpark rounding to reduce minor fluctuations
+    local ballparkRate = roundToBallpark(smoothedRate)
+    
+    return ballparkRate, "ok"
+end
+
+-- Round values to ballpark figures to reduce fluctuation display
+local function roundToBallpark(rate)
+    local absRate = math.abs(rate)
+    local sign = rate >= 0 and 1 or -1
+    
+    if absRate < 1000 then
+        -- Under 1 kEU/s: round to nearest 10 EU/s
+        return sign * math.floor((absRate + 5) / 10) * 10
+    elseif absRate < 10000 then
+        -- Under 10 kEU/s: round to nearest 100 EU/s  
+        return sign * math.floor((absRate + 50) / 100) * 100
+    elseif absRate < 100000 then
+        -- Under 100 kEU/s: round to nearest 1 kEU/s
+        return sign * math.floor((absRate + 500) / 1000) * 1000
+    elseif absRate < 1000000 then
+        -- Under 1 MEU/s: round to nearest 10 kEU/s
+        return sign * math.floor((absRate + 5000) / 10000) * 10000
+    elseif absRate < 10000000 then
+        -- Under 10 MEU/s: round to nearest 100 kEU/s
+        return sign * math.floor((absRate + 50000) / 100000) * 100000
+    else
+        -- Above 10 MEU/s: round to nearest 1 MEU/s
+        return sign * math.floor((absRate + 500000) / 1000000) * 1000000
+    end
+end
+
 -- Format EU values with appropriate units
 local function formatEU(euValue)
     local absValue = math.abs(euValue)
@@ -577,7 +653,7 @@ local function getEnergyColor(percent)
     elseif percent <= HIGH_THRESHOLD then
         return 0x00FF00 -- Green (good)
     else
-        return 0x00FF00 -- Green (above 90%)
+        return 0x00FF00 -- Green (above high threshold)
     end
 end
 
@@ -626,19 +702,20 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     -- Threshold indicators
     gpu.setForeground(0xFF0000)
     local lowPos = math.floor(barX + (barWidth - 2) * LOW_THRESHOLD) + 1
-    gpu.set(lowPos, barY + barHeight + 1, "↑ 20%")
+    gpu.set(lowPos, barY + barHeight + 1, "↑ " .. math.floor(LOW_THRESHOLD * 100) .. "%")
     
     gpu.setForeground(0x00FF00)
     local highPos = math.floor(barX + (barWidth - 2) * HIGH_THRESHOLD) + 1
-    gpu.set(highPos, barY + barHeight + 1, "90% ↑")
+    gpu.set(highPos, barY + barHeight + 1, math.floor(HIGH_THRESHOLD * 100) .. "% ↑")
     
     -- Energy details and usage analysis
     gpu.setForeground(0x00A6FF)
     gpu.set(3, barY + barHeight + 3, "Current: " .. formatEU(currentEnergy) .. " / " .. formatEU(maxEnergy))
     
     -- Calculate variables for display
-    local usageRate, status = calculateUsageRate()
-    local timeToEmpty, timeToFull = getTimeEstimates(currentEnergy, maxEnergy, usageRate)
+    local rawUsageRate, rawStatus = calculateUsageRate() -- For accurate time estimates
+    local usageRate, status = getSmoothedUsageRate() -- For stable display
+    local timeToEmpty, timeToFull = getTimeEstimates(currentEnergy, maxEnergy, rawUsageRate)
     local euIn, euOut = getEUInOutRates()
     
     local currentLine = barY + barHeight + 4
@@ -702,7 +779,7 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     else
         gpu.setForeground(0x808080) -- Gray
         if status == "insufficient data" then
-            gpu.set(3, currentLine, "Analyzing 10-second usage... (" .. #energyHistory .. " samples)")
+            gpu.set(3, currentLine, "Stabilizing usage rate... (" .. #usageRateHistory .. "/" .. RATE_HISTORY_SIZE .. " samples)")
         else
             gpu.set(3, currentLine, "Energy rate: " .. formatEU(usageRate) .. "/s")
         end
@@ -723,7 +800,7 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     
         -- Control information
         gpu.setForeground(0x808080)
-        gpu.set(3, statusY + 2, "Control Logic: Enable at <20%, Disable at >90%")
+        gpu.set(3, statusY + 2, "Control Logic: Enable at <" .. math.floor(LOW_THRESHOLD * 100) .. "%, Disable at >" .. math.floor(HIGH_THRESHOLD * 100) .. "%")
         gpu.set(3, statusY + 3, "Check Interval: " .. CHECK_INTERVAL .. " seconds")
         gpu.set(3, statusY + 4, "Redstone Output: All Sides")
         
@@ -749,7 +826,7 @@ local function displayStatus(energyPercent)
     
     -- Get usage information (always displayed)
     local usageInfo = ""
-    local usageRate, status = calculateUsageRate()
+    local usageRate, status = getSmoothedUsageRate()
     if status == "ok" then
         if usageRate < 0 then
             usageInfo = " | Usage: " .. formatEU(-usageRate) .. "/s"
@@ -757,7 +834,7 @@ local function displayStatus(energyPercent)
             usageInfo = " | Charging: " .. formatEU(usageRate) .. "/s"
         end
     elseif status == "insufficient data" then
-        usageInfo = " | Analyzing 10s..."
+        usageInfo = " | Stabilizing..."
     else
         usageInfo = " | Rate: " .. formatEU(usageRate) .. "/s"
     end
