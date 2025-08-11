@@ -17,7 +17,7 @@ local REDSTONE_SIDE = 1 -- redstone I/O side (1-6, or use sides.bottom etc)
 -- Component Addresses (Set these to your specific component addresses)
 -- To find component addresses, run: controller list
 -- or use: component.list() in lua console
-local ENERGY_DETECTOR_ADDRESS = "your-energy-detector-address-here" -- GT Energy Detector address
+local ENERGY_STORAGE_ADDRESS = "your-energy-storage-address-here" -- Adapter connected to supercapacitor controller
 local REDSTONE_IO_ADDRESS = "your-redstone-io-address-here" -- Redstone I/O address
 local GPU_ADDRESS = "your-gpu-address-here" -- GPU address (optional, will auto-detect if empty)
 local SCREEN_ADDRESS = "your-screen-address-here" -- Screen address (optional, will auto-detect if empty)
@@ -38,7 +38,7 @@ local function loadConfig()
                 local success, config = pcall(configFile)
                 if success and config then
                     -- Override defaults with config file values
-                    ENERGY_DETECTOR_ADDRESS = config.ENERGY_DETECTOR_ADDRESS or ENERGY_DETECTOR_ADDRESS
+                    ENERGY_STORAGE_ADDRESS = config.ENERGY_STORAGE_ADDRESS or ENERGY_STORAGE_ADDRESS
                     REDSTONE_IO_ADDRESS = config.REDSTONE_IO_ADDRESS or REDSTONE_IO_ADDRESS
                     GPU_ADDRESS = config.GPU_ADDRESS or GPU_ADDRESS
                     SCREEN_ADDRESS = config.SCREEN_ADDRESS or SCREEN_ADDRESS
@@ -70,7 +70,7 @@ end
 
 -- Global state
 local isRedstoneActive = false
-local energyDetector = nil
+local energyStorage = nil
 local redstoneIO = nil
 local gpu = nil
 local screen = nil
@@ -110,15 +110,15 @@ local function initializeComponents()
     screenWidth, screenHeight = gpu.getResolution()
     print(string.format("✓ Found Screen (%dx%d): %s...", screenWidth, screenHeight, screen.address:sub(1, 8)))
     
-    -- Initialize Energy Detector
-    if ENERGY_DETECTOR_ADDRESS and ENERGY_DETECTOR_ADDRESS ~= "your-energy-detector-address-here" then
-        energyDetector = component.proxy(ENERGY_DETECTOR_ADDRESS)
-        if not energyDetector then
-            error("✗ Energy detector not found at address: " .. ENERGY_DETECTOR_ADDRESS)
+    -- Initialize Energy Storage Adapter
+    if ENERGY_STORAGE_ADDRESS and ENERGY_STORAGE_ADDRESS ~= "your-energy-storage-address-here" then
+        energyStorage = component.proxy(ENERGY_STORAGE_ADDRESS)
+        if not energyStorage then
+            error("✗ Energy storage adapter not found at address: " .. ENERGY_STORAGE_ADDRESS)
         end
-        print("✓ Found Energy Detector: " .. ENERGY_DETECTOR_ADDRESS:sub(1, 8) .. "...")
+        print("✓ Found Energy Storage: " .. ENERGY_STORAGE_ADDRESS:sub(1, 8) .. "...")
     else
-        error("✗ Please set ENERGY_DETECTOR_ADDRESS in the configuration!\nRun 'component.list()' to find your energy detector address.")
+        error("✗ Please set ENERGY_STORAGE_ADDRESS in the configuration!\nRun 'component.list()' to find your energy storage adapter address.")
     end
     
     -- Initialize Redstone I/O
@@ -139,24 +139,57 @@ end
 
 -- Get current energy level as percentage (0.0 to 1.0)
 local function getEnergyLevel()
-    if not energyDetector then return 0 end
+    if not energyStorage then return 0 end
     
-    -- Try different methods to get energy data
-    local current, max = 0, 0
+    -- Try different methods to get energy data from the energy storage adapter
+    local currentEnergy, maxEnergy = 0, 0
     
-    if energyDetector.getEnergyStored and energyDetector.getMaxEnergyStored then
-        current = energyDetector.getEnergyStored()
-        max = energyDetector.getMaxEnergyStored()
-    elseif energyDetector.getStored and energyDetector.getCapacity then
-        current = energyDetector.getStored()
-        max = energyDetector.getCapacity()
+    -- Method 1: Standard GT energy methods
+    if energyStorage.getEnergyStored and energyStorage.getMaxEnergyStored then
+        currentEnergy = energyStorage.getEnergyStored()
+        maxEnergy = energyStorage.getMaxEnergyStored()
+    -- Method 2: Alternative energy methods
+    elseif energyStorage.getStored and energyStorage.getCapacity then
+        currentEnergy = energyStorage.getStored()
+        maxEnergy = energyStorage.getCapacity()
+    -- Method 3: Try energy tank methods (some GT blocks use tank-like systems)
+    elseif energyStorage.tank and type(energyStorage.tank) == "function" then
+        local tankInfo = energyStorage.tank()
+        if tankInfo and tankInfo.amount and tankInfo.capacity then
+            currentEnergy = tankInfo.amount
+            maxEnergy = tankInfo.capacity
+        else
+            print("⚠ Warning: Tank method returned invalid data")
+            return 0
+        end
+    -- Method 4: Try getting tank info by index (some energy storage adapters use indexed access)
+    elseif energyStorage.getTankInfo and type(energyStorage.getTankInfo) == "function" then
+        local tankInfo = energyStorage.getTankInfo(1) -- First tank
+        if tankInfo and tankInfo[1] then
+            currentEnergy = tankInfo[1].amount or 0
+            maxEnergy = tankInfo[1].capacity or 0
+        else
+            print("⚠ Warning: getTankInfo returned no data")
+            return 0
+        end
     else
-        print("⚠ Warning: Unknown energy detector methods")
+        -- List available methods for debugging
+        print("⚠ Warning: No recognized energy methods found on energy storage adapter")
+        print("Available methods:")
+        for methodName, func in pairs(energyStorage) do
+            if type(func) == "function" then
+                print("  - " .. methodName .. "()")
+            end
+        end
         return 0
     end
     
-    if max == 0 then return 0 end
-    return current / max
+    if maxEnergy == 0 then 
+        print("⚠ Warning: Maximum energy capacity is 0")
+        return 0 
+    end
+    
+    return currentEnergy / maxEnergy
 end
 
 -- Set redstone signal state
@@ -322,7 +355,7 @@ HOW TO FIND COMPONENT ADDRESSES:
 1. Start your computer and open the Lua console
 2. Type: component.list()
 3. Look for your components in the output:
-   - Energy Detector: Look for "gt_energydetector" or similar
+   - Energy Storage Adapter: Look for "adapter" (connected to your supercapacitor controller)
    - Redstone I/O: Look for "redstone" 
    - GPU: Look for "gpu"
    - Screen: Look for "screen"
@@ -332,8 +365,11 @@ HOW TO FIND COMPONENT ADDRESSES:
 
 Example addresses look like: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
-You only need to set ENERGY_DETECTOR_ADDRESS and REDSTONE_IO_ADDRESS.
+You only need to set ENERGY_STORAGE_ADDRESS and REDSTONE_IO_ADDRESS.
 GPU and Screen addresses are optional (will auto-detect if not set).
+
+IMPORTANT: The energy storage adapter must be connected directly to your supercapacitor controller
+to access its energy methods.
 --]]
 
 -- Main program loop
@@ -429,7 +465,8 @@ local function listComponents()
     
     print("💡 Copy the full address for the components you want to use.")
     print("💡 Update the configuration section at the top of this script.")
-    print("💡 Required: gt_energydetector (or similar) and redstone addresses")
+    print("💡 Required: energy storage adapter (connected to supercapacitor) and redstone addresses")
+    print("💡 Make sure your energy storage adapter is placed directly adjacent to the supercapacitor controller!")
     print("")
 end
 
