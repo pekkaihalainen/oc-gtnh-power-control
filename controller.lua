@@ -368,7 +368,7 @@ local function formatTime(seconds)
     end
 end
 
--- Get EU input/output rates from GT machine (if available)
+-- Get EU input/output rates from GT machine (if available) with error handling
 local function getEUInOutRates()
     if not energyStorage then
         return nil, nil
@@ -379,6 +379,8 @@ local function getEUInOutRates()
             local success, result = pcall(function() return energyStorage[methodName]() end)
             if success and result ~= nil then
                 return result
+            elseif not success then
+                print(string.format("⚠ Warning: Failed to call %s: %s", methodName, tostring(result)))
             end
         end
         return nil
@@ -429,41 +431,81 @@ local function getTimeEstimates(currentEnergy, maxEnergy, usageRate)
     return timeToEmpty, timeToFull
 end
 
--- Set redstone signal state
+-- Set redstone signal state with error handling
 local function setRedstoneSignal(active)
-    if not redstoneIO then return end
+    if not redstoneIO then 
+        print("⚠ Warning: No redstone I/O component available")
+        return false
+    end
     
     local strength = active and 15 or 0
-    redstoneIO.setOutput(REDSTONE_SIDE, strength)
-    isRedstoneActive = active
+    local success, error = pcall(function()
+        redstoneIO.setOutput(REDSTONE_SIDE, strength)
+    end)
     
-    local status = active and "ENABLED" or "DISABLED"
-    print(string.format("🔴 Redstone signal %s (strength: %d)", status, strength))
+    if success then
+        isRedstoneActive = active
+        local status = active and "ENABLED" or "DISABLED"
+        print(string.format("🔴 Redstone signal %s (strength: %d)", status, strength))
+        return true
+    else
+        print(string.format("❌ Failed to set redstone signal: %s", tostring(error)))
+        print("   Will retry on next cycle...")
+        return false
+    end
 end
 
--- Main control logic with hysteresis
+-- Main control logic with hysteresis and error handling
 local function updatePowerControl(energyPercent)
     local prevState = isRedstoneActive
     
     if not isRedstoneActive and energyPercent <= LOW_THRESHOLD then
         -- Energy is low and signal is off -> turn on
-        setRedstoneSignal(true)
-        print(string.format("⚡ Energy low (%.1f%%) - Activating power systems", energyPercent * 100))
+        print(string.format("⚡ Energy low (%.1f%%) - Attempting to activate power systems", energyPercent * 100))
+        local success = setRedstoneSignal(true)
+        if not success then
+            print("   ⚠ Redstone activation failed, will retry next cycle")
+        end
         
     elseif isRedstoneActive and energyPercent >= HIGH_THRESHOLD then
         -- Energy is high and signal is on -> turn off
-        setRedstoneSignal(false)
-        print(string.format("🔋 Energy sufficient (%.1f%%) - Deactivating power systems", energyPercent * 100))
+        print(string.format("🔋 Energy sufficient (%.1f%%) - Attempting to deactivate power systems", energyPercent * 100))
+        local success = setRedstoneSignal(false)
+        if not success then
+            print("   ⚠ Redstone deactivation failed, will retry next cycle")
+        end
     end
     
     -- No change in middle range - this is the hysteresis behavior
 end
 
--- Clear screen with background
+-- Safe GPU operation wrapper
+local function safeGPU(operation, ...)
+    if not gpu or not screen then return false end
+    
+    local success, error = pcall(operation, ...)
+    if not success then
+        print(string.format("❌ GPU operation failed: %s", tostring(error)))
+        return false
+    end
+    return true
+end
+
+-- Clear screen with background (with error handling)
 local function clearScreen()
-    gpu.setBackground(0x000000) -- Black background
-    gpu.setForeground(0x00A6FF) -- Light blue text
-    gpu.fill(1, 1, screenWidth, screenHeight, " ")
+    if not gpu or not screen then return false end
+    
+    local success = pcall(function()
+        gpu.setBackground(0x000000) -- Black background
+        gpu.setForeground(0x00A6FF) -- Light blue text
+        gpu.fill(1, 1, screenWidth, screenHeight, " ")
+    end)
+    
+    if not success then
+        print("❌ Failed to clear screen, GUI may not display correctly")
+        return false
+    end
+    return true
 end
 
 -- Draw a progress bar
@@ -512,9 +554,17 @@ local function getEnergyColor(percent)
     end
 end
 
--- Draw the main GUI
+-- Draw the main GUI (with error handling)
 local function drawGUI(energyPercent, currentEnergy, maxEnergy)
-    clearScreen()
+    -- Check if GPU/screen are available
+    if not gpu or not screen then
+        print("⚠ Warning: GUI not available, GPU or screen missing")
+        return false
+    end
+    
+    -- Wrap entire GUI drawing in error handling
+    local success, error = pcall(function()
+        clearScreen()
     
     -- Title
     gpu.setForeground(0x00FFFF)
@@ -566,9 +616,9 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     
     local currentLine = barY + barHeight + 4
     
-    if status == "ok" and math.abs(usageRate) > 100 then
-        if usageRate < 0 then
-            -- Losing energy
+    if status == "ok" then
+        if usageRate < -100 then
+            -- Losing energy significantly
             gpu.setForeground(0xFF8080) -- Light red
             gpu.set(3, currentLine, "Usage: " .. formatEU(-usageRate) .. "/s (consuming)")
             currentLine = currentLine + 1
@@ -577,8 +627,8 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
                 gpu.set(3, currentLine, "Time to empty: " .. formatTime(timeToEmpty))
                 currentLine = currentLine + 1
             end
-        else
-            -- Gaining energy
+        elseif usageRate > 100 then
+            -- Gaining energy significantly
             gpu.setForeground(0x80FF80) -- Light green
             gpu.set(3, currentLine, "Charge: " .. formatEU(usageRate) .. "/s (charging)")
             currentLine = currentLine + 1
@@ -587,30 +637,52 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
                 gpu.set(3, currentLine, "Time to full: " .. formatTime(timeToFull))
                 currentLine = currentLine + 1
             end
+        else
+            -- Small changes or stable - always show the rate
+            gpu.setForeground(0x808080) -- Gray
+            if usageRate < 0 then
+                gpu.set(3, currentLine, "Usage: " .. formatEU(-usageRate) .. "/s (consuming slowly)")
+            elseif usageRate > 0 then
+                gpu.set(3, currentLine, "Charge: " .. formatEU(usageRate) .. "/s (charging slowly)")
+            else
+                gpu.set(3, currentLine, "Energy stable (0 EU/s)")
+            end
+            currentLine = currentLine + 1
         end
     else
         gpu.setForeground(0x808080) -- Gray
         if status == "insufficient data" then
             gpu.set(3, currentLine, "Analyzing energy usage... (" .. #energyHistory .. "/2 samples)")
         else
-            gpu.set(3, currentLine, "Energy stable (rate: " .. formatEU(usageRate) .. "/s)")
+            gpu.set(3, currentLine, "Energy rate: " .. formatEU(usageRate) .. "/s")
         end
         currentLine = currentLine + 1
     end
     
-    -- Display EU input/output rates if available
-    if euIn or euOut then
-        gpu.setForeground(0x00A6FF) -- Light blue for info
-        if euIn and euIn > 0 then
-            gpu.set(3, currentLine, "Average EU In: " .. formatEU(euIn) .. "/s")
-            currentLine = currentLine + 1
-        end
-        if euOut and euOut > 0 then
-            gpu.setForeground(0xFFB366) -- Light orange for output
-            gpu.set(3, currentLine, "Average EU Out: " .. formatEU(euOut) .. "/s")
-            currentLine = currentLine + 1
-        end
+    -- Always display EU input/output rates
+    gpu.setForeground(0x00A6FF) -- Light blue for input
+    local euInText = "Average EU In: "
+    if euIn and euIn ~= 0 then
+        euInText = euInText .. formatEU(euIn) .. "/s"
+    elseif euIn == 0 then
+        euInText = euInText .. "0 EU/s"
+    else
+        euInText = euInText .. "N/A"
     end
+    gpu.set(3, currentLine, euInText)
+    currentLine = currentLine + 1
+    
+    gpu.setForeground(0xFFB366) -- Light orange for output
+    local euOutText = "Average EU Out: "
+    if euOut and euOut ~= 0 then
+        euOutText = euOutText .. formatEU(euOut) .. "/s"
+    elseif euOut == 0 then
+        euOutText = euOutText .. "0 EU/s"
+    else
+        euOutText = euOutText .. "N/A"
+    end
+    gpu.set(3, currentLine, euOutText)
+    currentLine = currentLine + 1
     
     -- Status section (positioned after energy info)
     local statusY = currentLine + 1
@@ -624,15 +696,24 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     gpu.set(21, statusY, statusText)
     gpu.setBackground(0x000000)
     
-    -- Control information
-    gpu.setForeground(0x808080)
-    gpu.set(3, statusY + 2, "Control Logic: Enable at <20%, Disable at >90%")
-    gpu.set(3, statusY + 3, "Check Interval: " .. CHECK_INTERVAL .. " seconds")
-    gpu.set(3, statusY + 4, "Redstone Side: " .. REDSTONE_SIDE)
+        -- Control information
+        gpu.setForeground(0x808080)
+        gpu.set(3, statusY + 2, "Control Logic: Enable at <20%, Disable at >90%")
+        gpu.set(3, statusY + 3, "Check Interval: " .. CHECK_INTERVAL .. " seconds")
+        gpu.set(3, statusY + 4, "Redstone Side: " .. REDSTONE_SIDE)
+        
+        -- Instructions
+        gpu.setForeground(0x00A6FF)
+        gpu.set(3, screenHeight - 1, "Press Ctrl+C to stop the program")
+    end)
     
-    -- Instructions
-    gpu.setForeground(0x00A6FF)
-    gpu.set(3, screenHeight - 1, "Press Ctrl+C to stop the program")
+    if not success then
+        print(string.format("❌ GUI drawing failed: %s", tostring(error)))
+        print("   Continuing with console-only mode...")
+        return false
+    end
+    
+    return true
 end
 
 -- Display current status (console fallback)
@@ -641,34 +722,48 @@ local function displayStatus(energyPercent)
     local stateDisplay = isRedstoneActive and "🔴 ON" or "⚫ OFF"
     local timeDisplay = os.date("%H:%M:%S")
     
-    -- Get usage information
+    -- Get usage information (always displayed)
     local usageInfo = ""
     local usageRate, status = calculateUsageRate()
-    if status == "ok" and math.abs(usageRate) > 100 then
+    if status == "ok" then
         if usageRate < 0 then
             usageInfo = " | Usage: " .. formatEU(-usageRate) .. "/s"
-        else
+        elseif usageRate > 0 then
             usageInfo = " | Charge: " .. formatEU(usageRate) .. "/s"
+        else
+            usageInfo = " | Stable: 0 EU/s"
         end
+    elseif status == "insufficient data" then
+        usageInfo = " | Analyzing..."
+    else
+        usageInfo = " | Rate: " .. formatEU(usageRate) .. "/s"
     end
     
     print(string.format("[%s] Energy: %s | Redstone: %s%s", timeDisplay, energyDisplay, stateDisplay, usageInfo))
     
-    -- Display EU in/out rates if available (on separate line for clarity)
+    -- Always display EU in/out rates (on separate line for clarity)
     local euIn, euOut = getEUInOutRates()
-    if euIn or euOut then
-        local inOutInfo = ""
-        if euIn and euIn > 0 then
-            inOutInfo = inOutInfo .. "In: " .. formatEU(euIn) .. "/s"
-        end
-        if euOut and euOut > 0 then
-            if inOutInfo ~= "" then inOutInfo = inOutInfo .. " | " end
-            inOutInfo = inOutInfo .. "Out: " .. formatEU(euOut) .. "/s"
-        end
-        if inOutInfo ~= "" then
-            print(string.format("[%s] %s", timeDisplay, inOutInfo))
-        end
+    local inText, outText
+    
+    -- Format EU In rate
+    if euIn and euIn ~= 0 then
+        inText = formatEU(euIn) .. "/s"
+    elseif euIn == 0 then
+        inText = "0 EU/s"
+    else
+        inText = "N/A"
     end
+    
+    -- Format EU Out rate
+    if euOut and euOut ~= 0 then
+        outText = formatEU(euOut) .. "/s"
+    elseif euOut == 0 then
+        outText = "0 EU/s"
+    else
+        outText = "N/A"
+    end
+    
+    print(string.format("[%s] EU In: %s | EU Out: %s", timeDisplay, inText, outText))
 end
 
 --[[
@@ -713,68 +808,113 @@ local function main()
     while true do
         local success, energyPercent = pcall(getEnergyLevel)
         
-        if success then
-            updatePowerControl(energyPercent)
+        if success and energyPercent then
+            -- Update power control with error handling
+            local controlSuccess, controlError = pcall(updatePowerControl, energyPercent)
+            if not controlSuccess then
+                print(string.format("❌ Power control update failed: %s", tostring(controlError)))
+                print("   Continuing monitoring...")
+            end
             
             -- Get raw energy values for usage tracking and display
             local currentEnergy, maxEnergy = 0, 0
-            if energyStorage then
-                local safeCall = function(methodName)
-                    if energyStorage[methodName] then
-                        local callSuccess, result = pcall(function() return energyStorage[methodName]() end)
-                        if callSuccess and result ~= nil then
-                            return result
+            local energySuccess, energyError = pcall(function()
+                if energyStorage then
+                    local safeCall = function(methodName)
+                        if energyStorage[methodName] then
+                            local callSuccess, result = pcall(function() return energyStorage[methodName]() end)
+                            if callSuccess and result ~= nil then
+                                return result
+                            end
                         end
+                        return nil
                     end
-                    return nil
+                    
+                    -- Try to get raw energy values using the same methods as getEnergyLevel
+                    local storedEU = safeCall("getEUStored")
+                    local capacityEU = safeCall("getEUCapacity")
+                    if storedEU and capacityEU then
+                        currentEnergy = storedEU
+                        maxEnergy = capacityEU
+                    else
+                        -- Fallback: calculate from percentage if direct methods fail
+                        currentEnergy = energyPercent * 1000000000 -- Assume typical capacity for calculation
+                        maxEnergy = 1000000000
+                    end
                 end
-                
-                -- Try to get raw energy values using the same methods as getEnergyLevel
-                local storedEU = safeCall("getEUStored")
-                local capacityEU = safeCall("getEUCapacity")
-                if storedEU and capacityEU then
-                    currentEnergy = storedEU
-                    maxEnergy = capacityEU
-                else
-                    -- Fallback: calculate from percentage if direct methods fail
-                    currentEnergy = energyPercent * 1000000000 -- Assume typical capacity for calculation
-                    maxEnergy = 1000000000
-                end
-            end
+            end)
             
-            -- Update energy history for usage tracking
-            updateEnergyHistory(currentEnergy, maxEnergy)
+            if energySuccess then
+                -- Update energy history for usage tracking
+                local historySuccess, historyError = pcall(updateEnergyHistory, currentEnergy, maxEnergy)
+                if not historySuccess then
+                    print(string.format("⚠ Warning: Failed to update energy history: %s", tostring(historyError)))
+                end
+            else
+                print(string.format("⚠ Warning: Failed to get detailed energy values: %s", tostring(energyError)))
+                currentEnergy, maxEnergy = 0, 0
+            end
             
             -- Update GUI if available, otherwise fall back to console
             if gpu and screen then
-                drawGUI(energyPercent, currentEnergy, maxEnergy)
+                local guiSuccess = drawGUI(energyPercent, currentEnergy, maxEnergy)
+                if not guiSuccess then
+                    -- Fall back to console if GUI fails
+                    print("   Falling back to console display...")
+                    displayStatus(energyPercent)
+                end
             else
                 displayStatus(energyPercent)
             end
         else
+            -- Energy reading failed - display error and continue
+            local errorMsg = string.format("⚠ Error reading energy level: %s", tostring(energyPercent))
+            print(errorMsg)
+            print("   Retrying on next cycle...")
+            
             if gpu and screen then
-                gpu.setForeground(0xFF0000)
-                gpu.set(3, screenHeight - 3, "⚠ Error reading energy level: " .. tostring(energyPercent))
-            else
-                print("⚠ Error reading energy level: " .. tostring(energyPercent))
+                local success = pcall(function()
+                    gpu.setForeground(0xFF0000)
+                    gpu.set(3, screenHeight - 3, errorMsg)
+                end)
+                if not success then
+                    print("⚠ Warning: Could not display error on screen")
+                end
             end
         end
         
         -- Wait for next check or handle interruption
         local eventType = event.pull(CHECK_INTERVAL, "interrupted")
         if eventType == "interrupted" then
-            if gpu and screen then
-                clearScreen()
-                gpu.setForeground(0xFF0000)
-                gpu.set(3, 3, "🛑 Program interrupted - cleaning up...")
-                setRedstoneSignal(false)
-                gpu.set(3, 4, "✓ Redstone signal disabled")
-                gpu.set(3, 6, "Press any key to exit...")
-                event.pull("key_down")
-            else
-                print("\n🛑 Program interrupted - cleaning up...")
-                setRedstoneSignal(false)
+            print("\n🛑 Program interrupted - cleaning up...")
+            
+            -- Safely disable redstone signal
+            local success = setRedstoneSignal(false)
+            if success then
                 print("✓ Redstone signal disabled")
+            else
+                print("⚠ Warning: Could not disable redstone signal")
+            end
+            
+            if gpu and screen then
+                local guiSuccess = pcall(function()
+                    clearScreen()
+                    gpu.setForeground(0xFF0000)
+                    gpu.set(3, 3, "🛑 Program interrupted - cleaning up...")
+                    if success then
+                        gpu.set(3, 4, "✓ Redstone signal disabled")
+                    else
+                        gpu.set(3, 4, "⚠ Could not disable redstone signal")
+                    end
+                    gpu.set(3, 6, "Press any key to exit...")
+                end)
+                
+                if guiSuccess then
+                    event.pull("key_down")
+                else
+                    print("⚠ Warning: Could not display shutdown message on screen")
+                    print("Press Ctrl+C again to force exit...")
+                end
             end
             break
         end
@@ -787,8 +927,16 @@ local function run()
     if not success then
         print("💥 Fatal error: " .. tostring(error))
         print("Ensure all components are properly connected!")
-        -- Try to disable redstone on error
-        pcall(setRedstoneSignal, false)
+        
+        -- Try to safely disable redstone on fatal error
+        print("Attempting emergency redstone shutdown...")
+        local redstoneSuccess = pcall(setRedstoneSignal, false)
+        if redstoneSuccess then
+            print("✓ Emergency redstone shutdown successful")
+        else
+            print("⚠ Warning: Emergency redstone shutdown failed")
+            print("   Please manually check redstone state!")
+        end
     end
 end
 
