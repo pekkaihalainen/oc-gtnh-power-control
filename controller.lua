@@ -489,12 +489,17 @@ local function getEUInOutRates()
     
     local euIn, euOut = nil, nil
     
-    -- Try various GT methods for input/output rates
+    -- Try various GT methods for input rates
     euIn = safeCall("getEUInputAverage") or safeCall("getAverageInputVoltage") or 
-           safeCall("getInputVoltage") or safeCall("getEUInput") or safeCall("getInputEU")
+           safeCall("getInputVoltage") or safeCall("getEUInput") or safeCall("getInputEU") or
+           safeCall("getEUInputPerSec") or safeCall("getInputEUPerSec") or safeCall("getAverageInput")
     
+    -- Try various GT methods for output rates (expanded list)
     euOut = safeCall("getEUOutputAverage") or safeCall("getAverageOutputVoltage") or 
-            safeCall("getOutputVoltage") or safeCall("getEUOutput") or safeCall("getOutputEU")
+            safeCall("getOutputVoltage") or safeCall("getEUOutput") or safeCall("getOutputEU") or
+            safeCall("getEUOutputPerSec") or safeCall("getOutputEUPerSec") or safeCall("getAverageOutput") or
+            safeCall("getLastEUOutput") or safeCall("getLastOutputEU") or safeCall("getRecentEUOutput") or
+            safeCall("getCurrentOutput") or safeCall("getCurrentEUOutput")
     
     -- Try getSensorInformation which might contain input/output data
     if not euIn or not euOut then
@@ -511,6 +516,23 @@ local function getEUInOutRates()
                     local rate = tonumber(string.match(infoStr, "([%d%.]+)"))
                     if rate then euOut = rate end
                 end
+            end
+        end
+    end
+    
+    -- Try alternative method patterns that might exist
+    if not euOut then
+        -- Some GT machines might use different patterns
+        local alternativeOutputs = {
+            "getOutputRate", "getEURate", "getDischargeRate", "getLastDischarge",
+            "getEnergyOutput", "getEnergyOutputRate", "getPowerOutput", "getPowerOutputRate"
+        }
+        
+        for _, methodName in ipairs(alternativeOutputs) do
+            local result = safeCall(methodName)
+            if result and result > 0 then
+                euOut = result
+                break
             end
         end
     end
@@ -1455,6 +1477,92 @@ elseif args[1] == "debug-energy" then
     local level = getEnergyLevel()
     print(string.format("Final result: %.1f%%", level * 100))
     return
+
+elseif args[1] == "debug-eu-rates" then
+    print("🔍 EU INPUT/OUTPUT RATES DEBUG MODE")
+    print("Initializing components...")
+    pcall(initializeComponents)
+    
+    if not energyStorage then
+        print("❌ No energy storage component found!")
+        print("Run 'controller inspect-adapter' to check adapter connection")
+        return
+    end
+    
+    print("Testing EU input/output rate methods on: " .. tostring(energyStorage))
+    print("")
+    
+    -- Test all possible EU input/output methods
+    local inputMethods = {
+        "getEUInputAverage", "getAverageInputVoltage", "getInputVoltage", 
+        "getEUInput", "getInputEU", "getEUInputPerSec", "getInputEUPerSec", "getAverageInput"
+    }
+    
+    local outputMethods = {
+        "getEUOutputAverage", "getAverageOutputVoltage", "getOutputVoltage", 
+        "getEUOutput", "getOutputEU", "getEUOutputPerSec", "getOutputEUPerSec", 
+        "getAverageOutput", "getLastEUOutput", "getLastOutputEU", "getRecentEUOutput",
+        "getCurrentOutput", "getCurrentEUOutput", "getOutputRate", "getEURate", 
+        "getDischargeRate", "getLastDischarge", "getEnergyOutput", "getEnergyOutputRate",
+        "getPowerOutput", "getPowerOutputRate"
+    }
+    
+    print("⚡ TESTING EU INPUT METHODS:")
+    for _, method in ipairs(inputMethods) do
+        if energyStorage[method] then
+            local success, result = pcall(function() return energyStorage[method]() end)
+            if success then
+                print(string.format("   ✅ %s: %s", method, tostring(result)))
+            else
+                print(string.format("   ❌ %s: Failed - %s", method, tostring(result)))
+            end
+        else
+            print(string.format("   ⚪ %s: Not available", method))
+        end
+    end
+    
+    print("")
+    print("⚡ TESTING EU OUTPUT METHODS:")
+    for _, method in ipairs(outputMethods) do
+        if energyStorage[method] then
+            local success, result = pcall(function() return energyStorage[method]() end)
+            if success then
+                print(string.format("   ✅ %s: %s", method, tostring(result)))
+            else
+                print(string.format("   ❌ %s: Failed - %s", method, tostring(result)))
+            end
+        else
+            print(string.format("   ⚪ %s: Not available", method))
+        end
+    end
+    
+    print("")
+    print("⚡ TESTING getSensorInformation:")
+    if energyStorage["getSensorInformation"] then
+        local success, result = pcall(function() return energyStorage["getSensorInformation"]() end)
+        if success and result then
+            print("   ✅ getSensorInformation returned:")
+            if type(result) == "table" then
+                for i, info in ipairs(result) do
+                    print(string.format("     [%d] %s", i, tostring(info)))
+                end
+            else
+                print("     " .. tostring(result))
+            end
+        else
+            print("   ❌ getSensorInformation failed or returned nil")
+        end
+    else
+        print("   ⚪ getSensorInformation: Not available")
+    end
+    
+    print("")
+    print("⚡ CURRENT getEUInOutRates() RESULT:")
+    local euIn, euOut = getEUInOutRates()
+    print(string.format("   EU In: %s", euIn and formatEU(euIn) .. "/s" or "N/A"))
+    print(string.format("   EU Out: %s", euOut and formatEU(euOut) .. "/s" or "N/A"))
+    
+    return
 elseif args[1] == "help" then
     print("=== CONTROLLER HELP ===")
     print("Usage: controller [command]")
@@ -1468,6 +1576,7 @@ elseif args[1] == "help" then
     print("  inspect-adapter   - Check if adapter is connected and what it sees")
     print("  test-energy       - Test all energy reading methods on your adapter")
     print("  debug-energy      - Run energy reading with detailed debug output")
+    print("  debug-eu-rates    - Debug EU input/output rate methods (if rates show 0)")
     print("  help              - Show this help message")
     print("")
     print("Energy Troubleshooting (if showing 0%):")
@@ -1475,6 +1584,11 @@ elseif args[1] == "help" then
     print("  2. Run 'controller test-energy' to see which methods work")
     print("  3. Run 'controller debug-energy' for verbose energy reading")
     print("  4. Check adapter placement (must be adjacent to supercapacitor)")
+    print("")
+    print("EU Rate Troubleshooting (if EU In/Out rates show 0 or N/A):")
+    print("  1. Run 'controller debug-eu-rates' to see available rate methods")
+    print("  2. Check if your supercapacitor is actively charging/discharging")
+    print("  3. Some GT machines may not support rate reporting")
     print("")
     return
 end
