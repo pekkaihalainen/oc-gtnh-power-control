@@ -78,8 +78,8 @@ local screenWidth, screenHeight = 0, 0
 
 -- Energy tracking for usage analysis
 local energyHistory = {} -- Table to store {timestamp, currentEnergy, maxEnergy}
-local HISTORY_DURATION = 15 -- Keep 15 seconds of history for 10-second usage calculations
-local MAX_HISTORY_SIZE = 20 -- Hard limit to prevent memory issues
+local HISTORY_DURATION = 30 -- Keep 30 seconds of history (increased for stability)
+local MAX_HISTORY_SIZE = 15 -- Conservative hard limit (should be ~6 entries for 30s at 5s intervals)
 
 -- Usage rate smoothing for stable display
 local usageRateHistory = {} -- Store recent rate calculations for smoothing
@@ -297,9 +297,10 @@ local function getEnergyLevel()
     return percentage
 end
 
--- Update energy history for usage tracking (optimized)
+-- Update energy history for usage tracking (with debugging)
 local function updateEnergyHistory(currentEnergy, maxEnergy)
     local currentTime = os.time()
+    local beforeCount = #energyHistory
     
     -- Add new entry
     energyHistory[#energyHistory + 1] = {
@@ -308,19 +309,22 @@ local function updateEnergyHistory(currentEnergy, maxEnergy)
         maxEnergy = maxEnergy
     }
     
-    -- Efficient cleanup: remove old entries from front
+    -- More conservative cleanup: only remove entries older than HISTORY_DURATION
     local cutoffTime = currentTime - HISTORY_DURATION
     local removeCount = 0
     
-    for i = 1, #energyHistory do
-        if energyHistory[i].timestamp >= cutoffTime then
-            break
+    -- Only remove entries that are genuinely old
+    for i = 1, #energyHistory - 1 do -- Don't remove the entry we just added
+        if energyHistory[i].timestamp < cutoffTime then
+            removeCount = removeCount + 1
+        else
+            break -- entries are in chronological order
         end
-        removeCount = removeCount + 1
     end
     
-    -- Remove old entries in batch (more efficient than table.remove in loop)
-    if removeCount > 0 then
+    -- Only remove if we have more than 3 entries and some are genuinely old
+    if removeCount > 0 and #energyHistory > 3 then
+        -- Remove old entries in batch
         for i = 1, #energyHistory - removeCount do
             energyHistory[i] = energyHistory[i + removeCount]
         end
@@ -329,14 +333,30 @@ local function updateEnergyHistory(currentEnergy, maxEnergy)
         end
     end
     
-    -- Hard limit check to prevent runaway memory usage
+    -- Hard limit check - only if we have excessive entries
     if #energyHistory > MAX_HISTORY_SIZE then
         local excess = #energyHistory - MAX_HISTORY_SIZE
+        print("⚠ History limit reached, removing " .. excess .. " oldest entries")
+        
         for i = 1, #energyHistory - excess do
             energyHistory[i] = energyHistory[i + excess]
         end
         for i = #energyHistory - excess + 1, #energyHistory do
             energyHistory[i] = nil
+        end
+    end
+    
+    -- Debug output every few cycles to track history growth
+    if cycleCount and (cycleCount % 10 == 0 or #energyHistory <= 2) then
+        print(string.format("📊 History: %d→%d entries, time: %d, cutoff: %d", 
+              beforeCount, #energyHistory, currentTime, cutoffTime))
+        
+        -- Show current history entries
+        if #energyHistory <= 2 then
+            for i, entry in ipairs(energyHistory) do
+                print(string.format("  [%d] Time: %d (age: %ds)", 
+                      i, entry.timestamp, currentTime - entry.timestamp))
+            end
         end
     end
 end
@@ -518,12 +538,12 @@ local function manageMemory()
     if currentMemory > 8192 then -- 8MB threshold
         print("⚠️ High memory usage detected (" .. math.floor(currentMemory) .. " KB), performing emergency cleanup...")
         
-        -- Clear excess history if needed
-        if #energyHistory > 10 then
-            for i = 11, #energyHistory do
+        -- Clear excess history if needed (very conservative)
+        if #energyHistory > 5 then
+            for i = 6, #energyHistory do
                 energyHistory[i] = nil
             end
-            print("   Trimmed energy history to 10 entries")
+            print("   Trimmed energy history to 5 entries")
         end
         
         if #usageRateHistory > 2 then
@@ -1581,24 +1601,33 @@ elseif args[1] == "debug-usage" then
     print("Initializing components...")
     pcall(initializeComponents)
     
+    local currentTime = os.time()
+    print("Current time: " .. currentTime)
+    print("History duration: " .. HISTORY_DURATION .. " seconds")
+    print("Max history size: " .. MAX_HISTORY_SIZE .. " entries")
     print("Current energy history entries: " .. #energyHistory)
     
-    if #energyHistory >= 2 then
+    if #energyHistory >= 1 then
         print("Energy history details:")
         for i, entry in ipairs(energyHistory) do
-            print(string.format("  [%d] Time: %d, Energy: %.0f EU", 
-                  i, entry.timestamp, entry.currentEnergy))
+            local age = currentTime - entry.timestamp
+            print(string.format("  [%d] Time: %d, Energy: %.0f EU, Age: %ds", 
+                  i, entry.timestamp, entry.currentEnergy, age))
         end
         
-        local rate, status = calculateUsageRate()
-        print(string.format("Raw calculation: %.2f EU/s, status: %s", rate, status))
-        
-        local smoothedRate, smoothedStatus = getSmoothedUsageRate()
-        print(string.format("Smoothed result: %s/s, status: %s", 
-              formatEU(smoothedRate), smoothedStatus))
-        print("Usage rate history entries: " .. #usageRateHistory)
+        if #energyHistory >= 2 then
+            local rate, status = calculateUsageRate()
+            print(string.format("Raw calculation: %.2f EU/s, status: %s", rate, status))
+            
+            local smoothedRate, smoothedStatus = getSmoothedUsageRate()
+            print(string.format("Smoothed result: %s/s, status: %s", 
+                  formatEU(smoothedRate), smoothedStatus))
+            print("Usage rate history entries: " .. #usageRateHistory)
+        else
+            print("⚠ Only 1 history entry - need at least 2 for rate calculation")
+        end
     else
-        print("⚠ Not enough energy history entries for calculation")
+        print("⚠ No energy history entries found")
         print("Need to run the main program for a few cycles to collect data")
     end
     return
