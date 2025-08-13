@@ -495,17 +495,29 @@ local function getEUInOutRates()
         -- Check specific indices for EU IN/OUT rates (slots 10 and 11)
         if sensorInfo[10] then
             local info10Str = tostring(sensorInfo[10])
-            local rate10 = tonumber(string.match(info10Str, "([%d%.]+)"))
-            if rate10 then 
-                euIn = rate10 
+            -- Handle comma-separated numbers like "1,000,000"
+            local numberStr = string.match(info10Str, "([%d%,%.]+)")
+            if numberStr then
+                -- Remove commas and parse
+                local cleanNumberStr = string.gsub(numberStr, ",", "")
+                local rate10 = tonumber(cleanNumberStr)
+                if rate10 then 
+                    euIn = rate10 
+                end
             end
         end
         
         if sensorInfo[11] then
             local info11Str = tostring(sensorInfo[11])
-            local rate11 = tonumber(string.match(info11Str, "([%d%.]+)"))
-            if rate11 then 
-                euOut = rate11 
+            -- Handle comma-separated numbers like "1,000,000"
+            local numberStr = string.match(info11Str, "([%d%,%.]+)")
+            if numberStr then
+                -- Remove commas and parse
+                local cleanNumberStr = string.gsub(numberStr, ",", "")
+                local rate11 = tonumber(cleanNumberStr)
+                if rate11 then 
+                    euOut = rate11 
+                end
             end
         end
     end
@@ -526,11 +538,19 @@ local function getEUInOutRates()
         for i, info in ipairs(sensorInfo) do
             local infoStr = tostring(info)
             if not euIn and (string.find(infoStr, "Input") or string.find(infoStr, "input")) then
-                local rate = tonumber(string.match(infoStr, "([%d%.]+)"))
-                if rate then euIn = rate end
+                local numberStr = string.match(infoStr, "([%d%,%.]+)")
+                if numberStr then
+                    local cleanNumberStr = string.gsub(numberStr, ",", "")
+                    local rate = tonumber(cleanNumberStr)
+                    if rate then euIn = rate end
+                end
             elseif not euOut and (string.find(infoStr, "Output") or string.find(infoStr, "output")) then
-                local rate = tonumber(string.match(infoStr, "([%d%.]+)"))
-                if rate then euOut = rate end
+                local numberStr = string.match(infoStr, "([%d%,%.]+)")
+                if numberStr then
+                    local cleanNumberStr = string.gsub(numberStr, ",", "")
+                    local rate = tonumber(cleanNumberStr)
+                    if rate then euOut = rate end
+                end
             end
         end
     end
@@ -665,6 +685,9 @@ local function getEnergyColor(percent)
 end
 
 -- Draw the main GUI (with error handling)
+-- Track if GUI has been initialized to avoid unnecessary screen clears
+local guiInitialized = false
+
 local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     -- Check if GPU/screen are available
     if not gpu or not screen then
@@ -674,22 +697,58 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     
     -- Wrap entire GUI drawing in error handling
     local success, error = pcall(function()
-        clearScreen()
+        -- Draw static elements only on first initialization
+        if not guiInitialized then
+            clearScreen()
+            
+            -- Title
+            gpu.setForeground(0x00FFFF)
+            local title = "═══ LAPATRONIC SUPERCAPACITOR CONTROLLER ═══"
+            local titleX = math.floor((screenWidth - unicode.len(title)) / 2) + 1
+            gpu.set(titleX, 2, title)
+            
+            -- Energy section label
+            gpu.setForeground(0xFF00FF)
+            gpu.set(3, 5, "ENERGY LEVEL:")
+            
+            -- Draw threshold indicators (static)
+            local barWidth = screenWidth - 6
+            local barX = 3
+            local barY = 7
+            local barHeight = 6
+            
+            gpu.setForeground(0xFF0000)
+            local lowPos = math.floor(barX + (barWidth - 2) * LOW_THRESHOLD) + 1
+            gpu.set(lowPos, barY + barHeight + 1, "↑ " .. math.floor(LOW_THRESHOLD * 100) .. "%")
+            
+            gpu.setForeground(0x00FF00)
+            local highPos = math.floor(barX + (barWidth - 2) * HIGH_THRESHOLD) + 1
+            gpu.set(highPos, barY + barHeight + 1, math.floor(HIGH_THRESHOLD * 100) .. "% ↑")
+            
+            -- Draw static status section labels
+            local statusY = barY + barHeight + 8  -- Approximate position
+            gpu.setForeground(0xFF00FF)
+            gpu.set(3, statusY, "REDSTONE STATUS:")
+            
+            -- Control information (static)
+            gpu.setForeground(0x808080)
+            gpu.set(3, statusY + 2, "Control Logic: Enable at <" .. math.floor(LOW_THRESHOLD * 100) .. "%, Disable at >" .. math.floor(HIGH_THRESHOLD * 100) .. "%")
+            gpu.set(3, statusY + 3, "Check Interval: " .. CHECK_INTERVAL .. " seconds")
+            gpu.set(3, statusY + 4, "Redstone Output: All Sides")
+            
+            -- Instructions (static)
+            gpu.setForeground(0x00A6FF)
+            gpu.set(3, screenHeight - 1, "Press Ctrl+C to stop the program")
+            
+            guiInitialized = true
+        end
     
-    -- Title
-    gpu.setForeground(0x00FFFF)
-    local title = "═══ LAPATRONIC SUPERCAPACITOR CONTROLLER ═══"
-    local titleX = math.floor((screenWidth - unicode.len(title)) / 2) + 1
-    gpu.set(titleX, 2, title)
-    
-    -- Current time
+    -- Always update dynamic content (time)
     gpu.setForeground(0x00A6FF)
     local timeStr = os.date("%Y-%m-%d %H:%M:%S")
+    -- Clear the time area first to avoid leftover characters
+    gpu.fill(screenWidth - 19, 2, 19, 1, " ")
     gpu.set(screenWidth - unicode.len(timeStr), 2, timeStr)
-    
-    -- Energy section
-    gpu.setForeground(0xFF00FF)
-    gpu.set(3, 5, "ENERGY LEVEL:")
     
     -- Progress bar
     local barWidth = screenWidth - 6
@@ -700,24 +759,19 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     local energyColor = getEnergyColor(energyPercent)
     drawProgressBar(barX, barY, barWidth, barHeight, energyPercent, energyColor)
     
-    -- Energy percentage text (moved outside and above the progress bar)
+    -- Clear and update energy percentage text 
     gpu.setForeground(0x00A6FF)
     local percentText = string.format("%.1f%%", energyPercent * 100)
     local percentX = math.floor((screenWidth - unicode.len(percentText)) / 2) + 1
-    gpu.set(percentX, barY - 1, percentText)  -- Position above the bar instead of inside
+    -- Clear the percentage area to avoid leftover characters
+    gpu.fill(percentX - 2, barY - 1, 10, 1, " ")
+    gpu.set(percentX, barY - 1, percentText)
     
-    -- Threshold indicators
-    gpu.setForeground(0xFF0000)
-    local lowPos = math.floor(barX + (barWidth - 2) * LOW_THRESHOLD) + 1
-    gpu.set(lowPos, barY + barHeight + 1, "↑ " .. math.floor(LOW_THRESHOLD * 100) .. "%")
-    
-    gpu.setForeground(0x00FF00)
-    local highPos = math.floor(barX + (barWidth - 2) * HIGH_THRESHOLD) + 1
-    gpu.set(highPos, barY + barHeight + 1, math.floor(HIGH_THRESHOLD * 100) .. "% ↑")
-    
-    -- Energy details and usage analysis
+    -- Clear and update energy details
+    local currentEnergyLine = barY + barHeight + 3
+    gpu.fill(3, currentEnergyLine, screenWidth - 6, 1, " ")
     gpu.setForeground(0x00A6FF)
-    gpu.set(3, barY + barHeight + 3, "Current: " .. formatEU(currentEnergy) .. " / " .. formatEU(maxEnergy))
+    gpu.set(3, currentEnergyLine, "Current: " .. formatEU(currentEnergy) .. " / " .. formatEU(maxEnergy))
     
     -- Calculate variables for display
     local usageRate, status = getSmoothedUsageRate() -- For stable display
@@ -725,7 +779,8 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     
     local currentLine = barY + barHeight + 4
     
-    -- Always display EU input/output rates first
+    -- Clear and update EU input rate
+    gpu.fill(3, currentLine, screenWidth - 6, 1, " ")
     gpu.setForeground(0x00A6FF) -- Light blue for input
     local euInText = "Average EU In: "
     if euIn and euIn ~= 0 then
@@ -738,6 +793,8 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     gpu.set(3, currentLine, euInText)
     currentLine = currentLine + 1
     
+    -- Clear and update EU output rate
+    gpu.fill(3, currentLine, screenWidth - 6, 1, " ")
     gpu.setForeground(0xFFB366) -- Light orange for output
     local euOutText = "Average EU Out: "
     if euOut and euOut ~= 0 then
@@ -753,18 +810,17 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     -- Add empty line
     currentLine = currentLine + 1
     
-    -- Display usage information after EU rates
+    -- Clear and update usage information
+    gpu.fill(3, currentLine, screenWidth - 6, 1, " ")
     if status == "ok" then
         if usageRate < 0 then
             -- Consuming energy (any negative rate)
             gpu.setForeground(0xFF8080) -- Light red
             gpu.set(3, currentLine, "Usage: " .. formatEU(-usageRate) .. "/s")
-            currentLine = currentLine + 1
         else
             -- Charging energy (positive rate or zero)
             gpu.setForeground(0x80FF80) -- Light green
             gpu.set(3, currentLine, "Charging: " .. formatEU(usageRate) .. "/s")
-            currentLine = currentLine + 1
         end
     else
         gpu.setForeground(0x808080) -- Gray
@@ -773,30 +829,20 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
         else
             gpu.set(3, currentLine, "Energy rate: " .. formatEU(usageRate) .. "/s")
         end
-        currentLine = currentLine + 1
     end
+    currentLine = currentLine + 1
     
-    -- Status section (positioned after energy info)
+    -- Update only dynamic redstone status
     local statusY = currentLine + 1
-    gpu.setForeground(0xFF00FF)
-    gpu.set(3, statusY, "REDSTONE STATUS:")
-    
     local statusColor = isRedstoneActive and 0xFF0000 or 0x808080
     local statusText = isRedstoneActive and "  ACTIVE  " or " INACTIVE "
+    
+    -- Clear the status area and update
+    gpu.fill(21, statusY, 10, 1, " ")
     gpu.setForeground(0x000000)
     gpu.setBackground(statusColor)
     gpu.set(21, statusY, statusText)
     gpu.setBackground(0x000000)
-    
-        -- Control information
-        gpu.setForeground(0x808080)
-        gpu.set(3, statusY + 2, "Control Logic: Enable at <" .. math.floor(LOW_THRESHOLD * 100) .. "%, Disable at >" .. math.floor(HIGH_THRESHOLD * 100) .. "%")
-        gpu.set(3, statusY + 3, "Check Interval: " .. CHECK_INTERVAL .. " seconds")
-        gpu.set(3, statusY + 4, "Redstone Output: All Sides")
-        
-        -- Instructions
-        gpu.setForeground(0x00A6FF)
-        gpu.set(3, screenHeight - 1, "Press Ctrl+C to stop the program")
     end)
     
     if not success then
@@ -892,6 +938,9 @@ local function main()
     
     -- Ensure redstone starts in known state
     setRedstoneSignal(false)
+    
+    -- Reset GUI initialization flag to ensure GUI is properly initialized
+    guiInitialized = false
     
     print("\n🚀 Starting monitoring loop...\n")
     
@@ -1508,14 +1557,26 @@ elseif args[1] == "debug-eu-rates" then
                 print("")
                 print("   🎯 CHECKING SPECIFIC SLOTS:")
                 if result[10] then
-                    local rate10 = tonumber(string.match(tostring(result[10]), "([%d%.]+)"))
+                    local info10Str = tostring(result[10])
+                    local numberStr = string.match(info10Str, "([%d%,%.]+)")
+                    local rate10 = nil
+                    if numberStr then
+                        local cleanNumberStr = string.gsub(numberStr, ",", "")
+                        rate10 = tonumber(cleanNumberStr)
+                    end
                     print(string.format("     Slot 10 (EU IN): %s → Parsed rate: %s", 
-                          tostring(result[10]), rate10 and formatEU(rate10) .. "/s" or "Could not parse"))
+                          info10Str, rate10 and formatEU(rate10) .. "/s" or "Could not parse"))
                 end
                 if result[11] then
-                    local rate11 = tonumber(string.match(tostring(result[11]), "([%d%.]+)"))
+                    local info11Str = tostring(result[11])
+                    local numberStr = string.match(info11Str, "([%d%,%.]+)")
+                    local rate11 = nil
+                    if numberStr then
+                        local cleanNumberStr = string.gsub(numberStr, ",", "")
+                        rate11 = tonumber(cleanNumberStr)
+                    end
                     print(string.format("     Slot 11 (EU OUT): %s → Parsed rate: %s", 
-                          tostring(result[11]), rate11 and formatEU(rate11) .. "/s" or "Could not parse"))
+                          info11Str, rate11 and formatEU(rate11) .. "/s" or "Could not parse"))
                 end
             else
                 print("     " .. tostring(result))
