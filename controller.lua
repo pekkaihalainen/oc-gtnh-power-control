@@ -489,40 +489,47 @@ local function getEUInOutRates()
     
     local euIn, euOut = nil, nil
     
-    -- Try various GT methods for input rates
-    euIn = safeCall("getEUInputAverage") or safeCall("getAverageInputVoltage") or 
-           safeCall("getInputVoltage") or safeCall("getEUInput") or safeCall("getInputEU") or
-           safeCall("getEUInputPerSec") or safeCall("getInputEUPerSec") or safeCall("getAverageInput")
-    
-    -- Try various GT methods for output rates (expanded list)
-    euOut = safeCall("getEUOutputAverage") or safeCall("getAverageOutputVoltage") or 
-            safeCall("getOutputVoltage") or safeCall("getEUOutput") or safeCall("getOutputEU") or
-            safeCall("getEUOutputPerSec") or safeCall("getOutputEUPerSec") or safeCall("getAverageOutput") or
-            safeCall("getLastEUOutput") or safeCall("getLastOutputEU") or safeCall("getRecentEUOutput") or
-            safeCall("getCurrentOutput") or safeCall("getCurrentEUOutput")
-    
-    -- Try getSensorInformation which might contain input/output data
-    if not euIn or not euOut then
-        local sensorInfo = safeCall("getSensorInformation")
-        if sensorInfo and type(sensorInfo) == "table" then
-            -- GT sensor information often has input/output as array elements
-            -- Common patterns: [1] = input rate, [2] = output rate
-            for i, info in ipairs(sensorInfo) do
-                local infoStr = tostring(info)
-                if string.find(infoStr, "Input") or string.find(infoStr, "input") then
-                    local rate = tonumber(string.match(infoStr, "([%d%.]+)"))
-                    if rate then euIn = rate end
-                elseif string.find(infoStr, "Output") or string.find(infoStr, "output") then
-                    local rate = tonumber(string.match(infoStr, "([%d%.]+)"))
-                    if rate then euOut = rate end
-                end
+    -- PRIORITY 1: Try getSensorInformation first (most reliable for GT machines)
+    local sensorInfo = safeCall("getSensorInformation")
+    if sensorInfo and type(sensorInfo) == "table" then
+        for i, info in ipairs(sensorInfo) do
+            local infoStr = tostring(info)
+            
+            -- Look for specific GT patterns: "Avg EU IN (last 5 seconds)" and "Avg EU Out (last 5 seconds)"
+            if string.find(infoStr, "Avg EU IN") or string.find(infoStr, "Avg EU In") then
+                local rate = tonumber(string.match(infoStr, "([%d%.]+)"))
+                if rate then euIn = rate end
+            elseif string.find(infoStr, "Avg EU Out") or string.find(infoStr, "Avg EU OUT") then
+                local rate = tonumber(string.match(infoStr, "([%d%.]+)"))
+                if rate then euOut = rate end
+            -- Fallback to generic input/output patterns
+            elseif string.find(infoStr, "Input") or string.find(infoStr, "input") then
+                local rate = tonumber(string.match(infoStr, "([%d%.]+)"))
+                if rate then euIn = euIn or rate end -- Don't overwrite if already found
+            elseif string.find(infoStr, "Output") or string.find(infoStr, "output") then
+                local rate = tonumber(string.match(infoStr, "([%d%.]+)"))
+                if rate then euOut = euOut or rate end -- Don't overwrite if already found
             end
         end
     end
     
-    -- Try alternative method patterns that might exist
+    -- PRIORITY 2: If getSensorInformation didn't provide the data, try direct GT methods
+    if not euIn then
+        euIn = safeCall("getEUInputAverage") or safeCall("getAverageInputVoltage") or 
+               safeCall("getInputVoltage") or safeCall("getEUInput") or safeCall("getInputEU") or
+               safeCall("getEUInputPerSec") or safeCall("getInputEUPerSec") or safeCall("getAverageInput")
+    end
+    
     if not euOut then
-        -- Some GT machines might use different patterns
+        euOut = safeCall("getEUOutputAverage") or safeCall("getAverageOutputVoltage") or 
+                safeCall("getOutputVoltage") or safeCall("getEUOutput") or safeCall("getOutputEU") or
+                safeCall("getEUOutputPerSec") or safeCall("getOutputEUPerSec") or safeCall("getAverageOutput") or
+                safeCall("getLastEUOutput") or safeCall("getLastOutputEU") or safeCall("getRecentEUOutput") or
+                safeCall("getCurrentOutput") or safeCall("getCurrentEUOutput")
+    end
+    
+    -- PRIORITY 3: Try alternative method patterns as last resort
+    if not euOut then
         local alternativeOutputs = {
             "getOutputRate", "getEURate", "getDischargeRate", "getLastDischarge",
             "getEnergyOutput", "getEnergyOutputRate", "getPowerOutput", "getPowerOutputRate"
@@ -538,6 +545,43 @@ local function getEUInOutRates()
     end
     
     return euIn, euOut
+end
+
+-- Get maintenance status from GT machine (if available) with error handling
+local function getMaintenanceStatus()
+    if not energyStorage then
+        return nil
+    end
+    
+    local safeCall = function(methodName)
+        if energyStorage[methodName] then
+            local success, result = pcall(function() return energyStorage[methodName]() end)
+            if success and result ~= nil then
+                return result
+            end
+        end
+        return nil
+    end
+    
+    -- Try getSensorInformation for maintenance data
+    local sensorInfo = safeCall("getSensorInformation")
+    if sensorInfo and type(sensorInfo) == "table" then
+        for i, info in ipairs(sensorInfo) do
+            local infoStr = tostring(info)
+            
+            -- Look for maintenance-related information
+            if string.find(infoStr, "Maintenance") or string.find(infoStr, "maintenance") or
+               string.find(infoStr, "Problems") or string.find(infoStr, "problems") or
+               string.find(infoStr, "Issues") or string.find(infoStr, "issues") or
+               string.find(infoStr, "Status") or string.find(infoStr, "status") or
+               string.find(infoStr, "Working") or string.find(infoStr, "working") or
+               string.find(infoStr, "Damaged") or string.find(infoStr, "damaged") then
+                return infoStr
+            end
+        end
+    end
+    
+    return nil
 end
 
 -- Set redstone signal state with error handling (all sides)
@@ -752,6 +796,14 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     gpu.set(3, currentLine, euOutText)
     currentLine = currentLine + 1
     
+    -- Display maintenance status if available
+    local maintenanceStatus = getMaintenanceStatus()
+    if maintenanceStatus then
+        gpu.setForeground(0xFFFFFF) -- White for maintenance info
+        gpu.set(3, currentLine, "Status: " .. maintenanceStatus)
+        currentLine = currentLine + 1
+    end
+    
     -- Add empty line
     currentLine = currentLine + 1
     
@@ -856,6 +908,12 @@ local function displayStatus(energyPercent)
     end
     
     print(string.format("[%s] EU In: %s | EU Out: %s", timeDisplay, inText, outText))
+    
+    -- Display maintenance status if available
+    local maintenanceStatus = getMaintenanceStatus()
+    if maintenanceStatus then
+        print(string.format("[%s] Status: %s", timeDisplay, maintenanceStatus))
+    end
 end
 
 --[[
@@ -1561,6 +1619,15 @@ elseif args[1] == "debug-eu-rates" then
     local euIn, euOut = getEUInOutRates()
     print(string.format("   EU In: %s", euIn and formatEU(euIn) .. "/s" or "N/A"))
     print(string.format("   EU Out: %s", euOut and formatEU(euOut) .. "/s" or "N/A"))
+    
+    print("")
+    print("🔧 MAINTENANCE STATUS:")
+    local maintenanceStatus = getMaintenanceStatus()
+    if maintenanceStatus then
+        print(string.format("   ✅ Status: %s", maintenanceStatus))
+    else
+        print("   ❌ No maintenance status available")
+    end
     
     return
 elseif args[1] == "help" then
