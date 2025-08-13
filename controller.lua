@@ -580,13 +580,19 @@ local function getMaintenanceStatus()
         
         local cleanText = tostring(text)
         
-        -- Remove color codes (§a, §r, etc.)
-        cleanText = string.gsub(cleanText, "§[0-9a-fA-F]", "")
+        -- Remove all color codes (§ followed by any character)
+        cleanText = string.gsub(cleanText, "§.", "")
         
-        -- Remove "Maintenance Status" prefix
-        cleanText = string.gsub(cleanText, "^Maintenance Status%s*", "")
+        -- Remove "Maintenance Status" prefix (case insensitive)
+        cleanText = string.gsub(cleanText, "^[Mm]aintenance [Ss]tatus%s*", "")
         
-        -- Trim whitespace
+        -- Remove colons
+        cleanText = string.gsub(cleanText, ":", "")
+        
+        -- Remove extra whitespace (multiple spaces become single space)
+        cleanText = string.gsub(cleanText, "%s+", " ")
+        
+        -- Trim leading and trailing whitespace
         cleanText = string.gsub(cleanText, "^%s+", "")
         cleanText = string.gsub(cleanText, "%s+$", "")
         
@@ -1668,10 +1674,12 @@ elseif args[1] == "debug-eu-rates" then
                 end
                 if result[17] then
                     local info17Str = tostring(result[17])
-                    -- Clean maintenance text using same logic as getMaintenanceStatus
+                    -- Clean maintenance text using same improved logic as getMaintenanceStatus
                     local cleanText = info17Str
-                    cleanText = string.gsub(cleanText, "§[0-9a-fA-F]", "") -- Remove color codes
-                    cleanText = string.gsub(cleanText, "^Maintenance Status%s*", "") -- Remove prefix
+                    cleanText = string.gsub(cleanText, "§.", "") -- Remove all color codes
+                    cleanText = string.gsub(cleanText, "^[Mm]aintenance [Ss]tatus%s*", "") -- Remove prefix
+                    cleanText = string.gsub(cleanText, ":", "") -- Remove colons
+                    cleanText = string.gsub(cleanText, "%s+", " ") -- Collapse multiple spaces
                     cleanText = string.gsub(cleanText, "^%s+", "") -- Trim start
                     cleanText = string.gsub(cleanText, "%s+$", "") -- Trim end
                     local cleanStatus = cleanText ~= "" and cleanText or nil
