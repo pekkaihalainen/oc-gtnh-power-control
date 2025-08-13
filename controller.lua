@@ -79,10 +79,15 @@ local screenWidth, screenHeight = 0, 0
 -- Energy tracking for usage analysis
 local energyHistory = {} -- Table to store {timestamp, currentEnergy, maxEnergy}
 local HISTORY_DURATION = 15 -- Keep 15 seconds of history for 10-second usage calculations
+local MAX_HISTORY_SIZE = 20 -- Hard limit to prevent memory issues
 
 -- Usage rate smoothing for stable display
 local usageRateHistory = {} -- Store recent rate calculations for smoothing
 local RATE_HISTORY_SIZE = 4 -- Number of recent rates to average for stable display
+
+-- Memory management
+local cycleCount = 0
+local GC_INTERVAL = 20 -- Run garbage collector every 20 cycles (100 seconds)
 
 -- Helper function to get component by address with fallback
 local function getComponentByAddress(address, componentType, fallbackType)
@@ -292,24 +297,46 @@ local function getEnergyLevel()
     return percentage
 end
 
--- Update energy history for usage tracking
+-- Update energy history for usage tracking (optimized)
 local function updateEnergyHistory(currentEnergy, maxEnergy)
     local currentTime = os.time()
     
     -- Add new entry
-    table.insert(energyHistory, {
+    energyHistory[#energyHistory + 1] = {
         timestamp = currentTime,
         currentEnergy = currentEnergy,
         maxEnergy = maxEnergy
-    })
+    }
     
-    -- Remove old entries (older than HISTORY_DURATION seconds)
+    -- Efficient cleanup: remove old entries from front
     local cutoffTime = currentTime - HISTORY_DURATION
-    for i = #energyHistory, 1, -1 do
-        if energyHistory[i].timestamp < cutoffTime then
-            table.remove(energyHistory, i)
-        else
-            break -- entries are in chronological order
+    local removeCount = 0
+    
+    for i = 1, #energyHistory do
+        if energyHistory[i].timestamp >= cutoffTime then
+            break
+        end
+        removeCount = removeCount + 1
+    end
+    
+    -- Remove old entries in batch (more efficient than table.remove in loop)
+    if removeCount > 0 then
+        for i = 1, #energyHistory - removeCount do
+            energyHistory[i] = energyHistory[i + removeCount]
+        end
+        for i = #energyHistory - removeCount + 1, #energyHistory do
+            energyHistory[i] = nil
+        end
+    end
+    
+    -- Hard limit check to prevent runaway memory usage
+    if #energyHistory > MAX_HISTORY_SIZE then
+        local excess = #energyHistory - MAX_HISTORY_SIZE
+        for i = 1, #energyHistory - excess do
+            energyHistory[i] = energyHistory[i + excess]
+        end
+        for i = #energyHistory - excess + 1, #energyHistory do
+            energyHistory[i] = nil
         end
     end
 end
@@ -385,15 +412,20 @@ local function roundToBallpark(rate)
     end
 end
 
--- Update usage rate history for smoothing
+-- Update usage rate history for smoothing (optimized)
 local function updateUsageRateHistory(rate, status)
     if status == "ok" then
         -- Add new rate to history
-        table.insert(usageRateHistory, rate)
+        usageRateHistory[#usageRateHistory + 1] = rate
         
-        -- Keep only recent rates
-        while #usageRateHistory > RATE_HISTORY_SIZE do
-            table.remove(usageRateHistory, 1)
+        -- Keep only recent rates (more efficient than table.remove)
+        if #usageRateHistory > RATE_HISTORY_SIZE then
+            for i = 1, RATE_HISTORY_SIZE do
+                usageRateHistory[i] = usageRateHistory[i + (#usageRateHistory - RATE_HISTORY_SIZE)]
+            end
+            for i = RATE_HISTORY_SIZE + 1, #usageRateHistory do
+                usageRateHistory[i] = nil
+            end
         end
     end
 end
@@ -431,17 +463,65 @@ local function getSmoothedUsageRate()
     return ballparkRate, "ok"
 end
 
--- Format EU values with appropriate units
+-- Memory management and monitoring
+local function manageMemory()
+    cycleCount = cycleCount + 1
+    
+    -- Run garbage collection periodically
+    if cycleCount % GC_INTERVAL == 0 then
+        local memBefore = collectgarbage("count")
+        collectgarbage("collect")
+        local memAfter = collectgarbage("count")
+        
+        print(string.format("🧹 Memory cleanup: %.1f KB → %.1f KB (freed %.1f KB)", 
+              memBefore, memAfter, memBefore - memAfter))
+        
+        -- Reset cycle counter to prevent overflow
+        if cycleCount > 1000 then
+            cycleCount = 0
+        end
+    end
+    
+    -- Emergency cleanup if memory gets too high
+    local currentMemory = collectgarbage("count")
+    if currentMemory > 8192 then -- 8MB threshold
+        print("⚠️ High memory usage detected (" .. math.floor(currentMemory) .. " KB), performing emergency cleanup...")
+        
+        -- Clear excess history if needed
+        if #energyHistory > 10 then
+            for i = 11, #energyHistory do
+                energyHistory[i] = nil
+            end
+            print("   Trimmed energy history to 10 entries")
+        end
+        
+        if #usageRateHistory > 2 then
+            for i = 3, #usageRateHistory do
+                usageRateHistory[i] = nil
+            end
+            print("   Trimmed usage rate history to 2 entries")
+        end
+        
+        collectgarbage("collect")
+        local afterEmergency = collectgarbage("count")
+        print("   Emergency cleanup completed: " .. math.floor(afterEmergency) .. " KB")
+    end
+end
+
+-- Format EU values with appropriate units (optimized)
 local function formatEU(euValue)
     local absValue = math.abs(euValue)
     if absValue >= 1000000000 then
-        return string.format("%.2f GEU", euValue / 1000000000)
+        local geu = euValue / 1000000000
+        return math.floor(geu * 100 + 0.5) / 100 .. " GEU"
     elseif absValue >= 1000000 then
-        return string.format("%.2f MEU", euValue / 1000000)
+        local meu = euValue / 1000000
+        return math.floor(meu * 100 + 0.5) / 100 .. " MEU"
     elseif absValue >= 1000 then
-        return string.format("%.2f kEU", euValue / 1000)
+        local keu = euValue / 1000
+        return math.floor(keu * 100 + 0.5) / 100 .. " kEU"
     else
-        return string.format("%.0f EU", euValue)
+        return math.floor(euValue + 0.5) .. " EU"
     end
 end
 
@@ -764,14 +844,15 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     return true
 end
 
--- Display current status (console fallback)
+-- Display current status (console fallback) - optimized
 local function displayStatus(energyPercent)
-    local energyDisplay = string.format("%.1f%%", energyPercent * 100)
+    -- Reduce string.format calls by using concatenation where possible
+    local energyDisplay = math.floor(energyPercent * 1000 + 0.5) / 10 .. "%"
     local stateDisplay = isRedstoneActive and "🔴 ON" or "⚫ OFF"
     local timeDisplay = os.date("%H:%M:%S")
     
-    -- Get usage information (always displayed)
-    local usageInfo = ""
+    -- Get usage information (always displayed)  
+    local usageInfo
     local usageRate, status = getSmoothedUsageRate()
     if status == "ok" then
         if usageRate < 0 then
@@ -785,7 +866,8 @@ local function displayStatus(energyPercent)
         usageInfo = " | Rate: " .. formatEU(usageRate) .. "/s"
     end
     
-    print(string.format("[%s] Energy: %s | Redstone: %s%s", timeDisplay, energyDisplay, stateDisplay, usageInfo))
+    -- Use concatenation instead of string.format for better performance
+    print("[" .. timeDisplay .. "] Energy: " .. energyDisplay .. " | Redstone: " .. stateDisplay .. usageInfo)
     
     -- Always display EU in/out rates (on separate line for clarity)
     local euIn, euOut = getEUInOutRates()
@@ -840,6 +922,8 @@ local function main()
     print("=== Lapatronic Supercapacitor Controller ===")
     print(string.format("Low threshold: %.0f%% | High threshold: %.0f%%", LOW_THRESHOLD * 100, HIGH_THRESHOLD * 100))
     print(string.format("Check interval: %ds | Redstone output: All sides", CHECK_INTERVAL))
+    print("Memory optimization: Enabled | GC interval: " .. GC_INTERVAL .. " cycles")
+    print("Initial memory usage: " .. math.floor(collectgarbage("count")) .. " KB")
     print("Press Ctrl+C to stop")
     print("")
     
@@ -929,6 +1013,9 @@ local function main()
             end
         end
         
+        -- Memory management
+        manageMemory()
+        
         -- Wait for next check or handle interruption
         local eventType = event.pull(CHECK_INTERVAL, "interrupted")
         if eventType == "interrupted" then
@@ -962,6 +1049,13 @@ local function main()
                     print("Press Ctrl+C again to force exit...")
                 end
             end
+            
+            -- Clear memory before exit
+            energyHistory = nil
+            usageRateHistory = nil
+            collectgarbage("collect")
+            print("✓ Memory cleared")
+            
             break
         end
     end
