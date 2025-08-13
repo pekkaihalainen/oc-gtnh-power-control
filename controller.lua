@@ -492,23 +492,43 @@ local function getEUInOutRates()
     -- PRIORITY 1: Try getSensorInformation first (most reliable for GT machines)
     local sensorInfo = safeCall("getSensorInformation")
     if sensorInfo and type(sensorInfo) == "table" then
-        for i, info in ipairs(sensorInfo) do
-            local infoStr = tostring(info)
-            
-            -- Look for specific GT patterns: "Avg EU IN (last 5 seconds)" and "Avg EU Out (last 5 seconds)"
-            if string.find(infoStr, "Avg EU IN") or string.find(infoStr, "Avg EU In") then
-                local rate = tonumber(string.match(infoStr, "([%d%.]+)"))
-                if rate then euIn = rate end
-            elseif string.find(infoStr, "Avg EU Out") or string.find(infoStr, "Avg EU OUT") then
-                local rate = tonumber(string.match(infoStr, "([%d%.]+)"))
-                if rate then euOut = rate end
-            -- Fallback to generic input/output patterns
-            elseif string.find(infoStr, "Input") or string.find(infoStr, "input") then
-                local rate = tonumber(string.match(infoStr, "([%d%.]+)"))
-                if rate then euIn = euIn or rate end -- Don't overwrite if already found
-            elseif string.find(infoStr, "Output") or string.find(infoStr, "output") then
-                local rate = tonumber(string.match(infoStr, "([%d%.]+)"))
-                if rate then euOut = euOut or rate end -- Don't overwrite if already found
+        -- Check specific indices for EU IN/OUT rates (slots 10 and 11)
+        if sensorInfo[10] then
+            local info10Str = tostring(sensorInfo[10])
+            local rate10 = tonumber(string.match(info10Str, "([%d%.]+)"))
+            if rate10 then 
+                euIn = rate10 
+            end
+        end
+        
+        if sensorInfo[11] then
+            local info11Str = tostring(sensorInfo[11])
+            local rate11 = tonumber(string.match(info11Str, "([%d%.]+)"))
+            if rate11 then 
+                euOut = rate11 
+            end
+        end
+        
+        -- If slots 10/11 didn't work, fall back to searching all entries
+        if not euIn or not euOut then
+            for i, info in ipairs(sensorInfo) do
+                local infoStr = tostring(info)
+                
+                -- Look for specific GT patterns: "Avg EU IN (last 5 seconds)" and "Avg EU Out (last 5 seconds)"
+                if not euIn and (string.find(infoStr, "Avg EU IN") or string.find(infoStr, "Avg EU In")) then
+                    local rate = tonumber(string.match(infoStr, "([%d%.]+)"))
+                    if rate then euIn = rate end
+                elseif not euOut and (string.find(infoStr, "Avg EU Out") or string.find(infoStr, "Avg EU OUT")) then
+                    local rate = tonumber(string.match(infoStr, "([%d%.]+)"))
+                    if rate then euOut = rate end
+                -- Fallback to generic input/output patterns
+                elseif not euIn and (string.find(infoStr, "Input") or string.find(infoStr, "input")) then
+                    local rate = tonumber(string.match(infoStr, "([%d%.]+)"))
+                    if rate then euIn = rate end
+                elseif not euOut and (string.find(infoStr, "Output") or string.find(infoStr, "output")) then
+                    local rate = tonumber(string.match(infoStr, "([%d%.]+)"))
+                    if rate then euOut = rate end
+                end
             end
         end
     end
@@ -1602,7 +1622,24 @@ elseif args[1] == "debug-eu-rates" then
             print("   ✅ getSensorInformation returned:")
             if type(result) == "table" then
                 for i, info in ipairs(result) do
-                    print(string.format("     [%d] %s", i, tostring(info)))
+                    local marker = ""
+                    if i == 10 then marker = " ← EU IN (slot 10)"
+                    elseif i == 11 then marker = " ← EU OUT (slot 11)"
+                    end
+                    print(string.format("     [%d] %s%s", i, tostring(info), marker))
+                end
+                
+                print("")
+                print("   🎯 CHECKING SPECIFIC SLOTS:")
+                if result[10] then
+                    local rate10 = tonumber(string.match(tostring(result[10]), "([%d%.]+)"))
+                    print(string.format("     Slot 10 (EU IN): %s → Parsed rate: %s", 
+                          tostring(result[10]), rate10 and formatEU(rate10) .. "/s" or "Could not parse"))
+                end
+                if result[11] then
+                    local rate11 = tonumber(string.match(tostring(result[11]), "([%d%.]+)"))
+                    print(string.format("     Slot 11 (EU OUT): %s → Parsed rate: %s", 
+                          tostring(result[11]), rate11 and formatEU(rate11) .. "/s" or "Could not parse"))
                 end
             else
                 print("     " .. tostring(result))
