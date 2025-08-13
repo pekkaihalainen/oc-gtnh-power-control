@@ -558,6 +558,46 @@ local function getEUInOutRates()
     return euIn, euOut
 end
 
+-- Get maintenance status from GT machine (if available) with error handling
+local function getMaintenanceStatus()
+    if not energyStorage then
+        return nil
+    end
+    
+    local safeCall = function(methodName)
+        if energyStorage[methodName] then
+            local success, result = pcall(function() return energyStorage[methodName]() end)
+            if success and result ~= nil then
+                return result
+            end
+        end
+        return nil
+    end
+    
+    -- Try getSensorInformation for maintenance data
+    local sensorInfo = safeCall("getSensorInformation")
+    if sensorInfo and type(sensorInfo) == "table" then
+        for i, info in ipairs(sensorInfo) do
+            local infoStr = tostring(info)
+            
+            -- Look for maintenance-related information
+            if string.find(infoStr, "Maintenance") or string.find(infoStr, "maintenance") or
+               string.find(infoStr, "Problems") or string.find(infoStr, "problems") or
+               string.find(infoStr, "Issues") or string.find(infoStr, "issues") or
+               string.find(infoStr, "Status") or string.find(infoStr, "status") or
+               string.find(infoStr, "Working") or string.find(infoStr, "working") or
+               string.find(infoStr, "Damaged") or string.find(infoStr, "damaged") or
+               string.find(infoStr, "Perfect") or string.find(infoStr, "perfect") or
+               string.find(infoStr, "Needs") or string.find(infoStr, "needs") or
+               string.find(infoStr, "Efficiency") or string.find(infoStr, "efficiency") then
+                return infoStr
+            end
+        end
+    end
+    
+    return nil
+end
+
 -- Set redstone signal state with error handling (all sides)
 local function setRedstoneSignal(active)
     if not redstoneIO then 
@@ -726,7 +766,7 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
             gpu.set(highPos, barY + barHeight + 1, math.floor(HIGH_THRESHOLD * 100) .. "% ↑")
             
             -- Draw static status section labels
-            local statusY = barY + barHeight + 8  -- Approximate position
+            local statusY = barY + barHeight + 9  -- Approximate position
             gpu.setForeground(0xFF00FF)
             gpu.set(3, statusY, "REDSTONE STATUS:")
             
@@ -735,6 +775,16 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
             gpu.set(3, statusY + 2, "Control Logic: Enable at <" .. math.floor(LOW_THRESHOLD * 100) .. "%, Disable at >" .. math.floor(HIGH_THRESHOLD * 100) .. "%")
             gpu.set(3, statusY + 3, "Check Interval: " .. CHECK_INTERVAL .. " seconds")
             gpu.set(3, statusY + 4, "Redstone Output: All Sides")
+            
+            -- Maintenance status (static, but get current value)
+            local maintenanceStatus = getMaintenanceStatus()
+            if maintenanceStatus then
+                gpu.setForeground(0xFFFFFF) -- White for maintenance info
+                gpu.set(3, statusY + 5, "Maintenance: " .. maintenanceStatus)
+            else
+                gpu.setForeground(0x808080) -- Gray for N/A
+                gpu.set(3, statusY + 5, "Maintenance: N/A")
+            end
             
             -- Instructions (static)
             gpu.setForeground(0x00A6FF)
@@ -900,6 +950,12 @@ local function displayStatus(energyPercent)
     end
     
     print(string.format("[%s] EU In: %s | EU Out: %s", timeDisplay, inText, outText))
+    
+    -- Display maintenance status if available
+    local maintenanceStatus = getMaintenanceStatus()
+    if maintenanceStatus then
+        print(string.format("[%s] Maintenance: %s", timeDisplay, maintenanceStatus))
+    end
 end
 
 --[[
@@ -1594,6 +1650,15 @@ elseif args[1] == "debug-eu-rates" then
     print(string.format("   EU In: %s", euIn and formatEU(euIn) .. "/s" or "N/A"))
     print(string.format("   EU Out: %s", euOut and formatEU(euOut) .. "/s" or "N/A"))
     
+    print("")
+    print("🔧 MAINTENANCE STATUS:")
+    local maintenanceStatus = getMaintenanceStatus()
+    if maintenanceStatus then
+        print(string.format("   ✅ Status: %s", maintenanceStatus))
+    else
+        print("   ❌ No maintenance status available")
+    end
+    
     return
 
 elseif args[1] == "help" then
@@ -1609,7 +1674,7 @@ elseif args[1] == "help" then
     print("  inspect-adapter   - Check if adapter is connected and what it sees")
     print("  test-energy       - Test all energy reading methods on your adapter")
     print("  debug-energy      - Run energy reading with detailed debug output")
-    print("  debug-eu-rates    - Debug EU input/output rate methods using getSensorInformation")
+    print("  debug-eu-rates    - Debug EU input/output rates and maintenance status using getSensorInformation")
     print("  help              - Show this help message")
     print("")
     print("Energy Troubleshooting (if showing 0%):")
