@@ -341,34 +341,51 @@ local function updateEnergyHistory(currentEnergy, maxEnergy)
     end
 end
 
--- Calculate current EU usage rate (EU/second) over a 10-second period
+-- Calculate current EU usage rate (EU/second) over a flexible period
 local function calculateUsageRate()
     if #energyHistory < 2 then
         return 0, "insufficient data"
     end
     
     local current = energyHistory[#energyHistory]
-    local targetPeriod = 10 -- seconds
-    local oldestAcceptable = current.timestamp - targetPeriod
-    
-    -- Find the best entry that's approximately 10 seconds old
     local oldEntry = nil
+    
+    -- Try to find an entry that's at least 3 seconds old, prefer around 10 seconds
+    local targetPeriod = 10 -- seconds
+    local minTimeDiff = 3 -- minimum seconds for meaningful calculation
     local bestTimeDiff = math.huge
     
     for i = 1, #energyHistory - 1 do
         local entry = energyHistory[i]
-        local timeDiff = math.abs((current.timestamp - entry.timestamp) - targetPeriod)
+        local actualTimeDiff = current.timestamp - entry.timestamp
         
-        -- Prefer entries closer to exactly 10 seconds ago
-        if timeDiff < bestTimeDiff and (current.timestamp - entry.timestamp) >= 3 then -- At least 3 seconds difference
-            bestTimeDiff = timeDiff
-            oldEntry = entry
+        -- Only consider entries that are at least minTimeDiff seconds old
+        if actualTimeDiff >= minTimeDiff then
+            -- Prefer entries closer to 10 seconds, but accept any valid entry
+            local timeDiffFromTarget = math.abs(actualTimeDiff - targetPeriod)
+            if timeDiffFromTarget < bestTimeDiff then
+                bestTimeDiff = timeDiffFromTarget
+                oldEntry = entry
+            end
         end
     end
     
-    -- Fallback: if we don't have good 10-second data, use the oldest available
+    -- Fallback: if no entry meets the 3-second minimum, use the oldest available
     if not oldEntry and #energyHistory >= 2 then
-        oldEntry = energyHistory[1]
+        local oldestEntry = energyHistory[1]
+        local timeDiff = current.timestamp - oldestEntry.timestamp
+        if timeDiff > 0 then -- Accept any positive time difference as last resort
+            oldEntry = oldestEntry
+        end
+    end
+    
+    -- Final fallback: use previous entry if we still don't have anything
+    if not oldEntry and #energyHistory >= 2 then
+        local prevEntry = energyHistory[#energyHistory - 1]
+        local timeDiff = current.timestamp - prevEntry.timestamp
+        if timeDiff > 0 then
+            oldEntry = prevEntry
+        end
     end
     
     if not oldEntry then
@@ -819,7 +836,17 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     else
         gpu.setForeground(0x808080) -- Gray
         if status == "insufficient data" then
+            local debugInfo = "Energy history: " .. #energyHistory .. " entries"
+            if #energyHistory >= 2 then
+                local current = energyHistory[#energyHistory]
+                local oldest = energyHistory[1]
+                local timeDiff = current.timestamp - oldest.timestamp
+                debugInfo = debugInfo .. ", Time span: " .. math.floor(timeDiff) .. "s"
+            end
             gpu.set(3, currentLine, "Stabilizing usage rate... (" .. #usageRateHistory .. "/" .. RATE_HISTORY_SIZE .. " samples)")
+            currentLine = currentLine + 1
+            gpu.setForeground(0x606060) -- Darker gray for debug info
+            gpu.set(3, currentLine, debugInfo)
         else
             gpu.set(3, currentLine, "Energy rate: " .. formatEU(usageRate) .. "/s")
         end
@@ -875,7 +902,11 @@ local function displayStatus(energyPercent)
             usageInfo = " | Charging: " .. formatEU(usageRate) .. "/s"
         end
     elseif status == "insufficient data" then
-        usageInfo = " | Stabilizing..."
+        local debugText = "Stabilizing..."
+        if #energyHistory >= 1 then
+            debugText = debugText .. " (" .. #energyHistory .. " history entries)"
+        end
+        usageInfo = " | " .. debugText
     else
         usageInfo = " | Rate: " .. formatEU(usageRate) .. "/s"
     end
@@ -1544,6 +1575,33 @@ elseif args[1] == "debug-energy" then
     local level = getEnergyLevel()
     print(string.format("Final result: %.1f%%", level * 100))
     return
+
+elseif args[1] == "debug-usage" then
+    print("🔍 USAGE RATE DEBUG MODE")
+    print("Initializing components...")
+    pcall(initializeComponents)
+    
+    print("Current energy history entries: " .. #energyHistory)
+    
+    if #energyHistory >= 2 then
+        print("Energy history details:")
+        for i, entry in ipairs(energyHistory) do
+            print(string.format("  [%d] Time: %d, Energy: %.0f EU", 
+                  i, entry.timestamp, entry.currentEnergy))
+        end
+        
+        local rate, status = calculateUsageRate()
+        print(string.format("Raw calculation: %.2f EU/s, status: %s", rate, status))
+        
+        local smoothedRate, smoothedStatus = getSmoothedUsageRate()
+        print(string.format("Smoothed result: %s/s, status: %s", 
+              formatEU(smoothedRate), smoothedStatus))
+        print("Usage rate history entries: " .. #usageRateHistory)
+    else
+        print("⚠ Not enough energy history entries for calculation")
+        print("Need to run the main program for a few cycles to collect data")
+    end
+    return
 elseif args[1] == "help" then
     print("=== CONTROLLER HELP ===")
     print("Usage: controller [command]")
@@ -1557,6 +1615,7 @@ elseif args[1] == "help" then
     print("  inspect-adapter   - Check if adapter is connected and what it sees")
     print("  test-energy       - Test all energy reading methods on your adapter")
     print("  debug-energy      - Run energy reading with detailed debug output")
+    print("  debug-usage       - Debug usage rate calculation (shows history)")
     print("  help              - Show this help message")
     print("")
     print("Energy Troubleshooting (if showing 0%):")
@@ -1564,6 +1623,11 @@ elseif args[1] == "help" then
     print("  2. Run 'controller test-energy' to see which methods work")
     print("  3. Run 'controller debug-energy' for verbose energy reading")
     print("  4. Check adapter placement (must be adjacent to supercapacitor)")
+    print("")
+    print("Usage Rate Troubleshooting (if stuck on 'Stabilizing'):")
+    print("  1. Run 'controller debug-usage' to see energy history details")
+    print("  2. Let the program run for at least 10-15 seconds to collect data")
+    print("  3. Check if energy values are changing over time")
     print("")
     return
 end
