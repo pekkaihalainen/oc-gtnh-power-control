@@ -489,28 +489,48 @@ local function getEUInOutRates()
     
     local euIn, euOut = nil, nil
     
-    -- Try various GT methods for input/output rates
-    euIn = safeCall("getEUInputAverage") or safeCall("getAverageInputVoltage") or 
-           safeCall("getInputVoltage") or safeCall("getEUInput") or safeCall("getInputEU")
+    -- PRIORITY 1: Try getSensorInformation first (most reliable for GT machines)
+    local sensorInfo = safeCall("getSensorInformation")
+    if sensorInfo and type(sensorInfo) == "table" then
+        -- Check specific indices for EU IN/OUT rates (slots 10 and 11)
+        if sensorInfo[10] then
+            local info10Str = tostring(sensorInfo[10])
+            local rate10 = tonumber(string.match(info10Str, "([%d%.]+)"))
+            if rate10 then 
+                euIn = rate10 
+            end
+        end
+        
+        if sensorInfo[11] then
+            local info11Str = tostring(sensorInfo[11])
+            local rate11 = tonumber(string.match(info11Str, "([%d%.]+)"))
+            if rate11 then 
+                euOut = rate11 
+            end
+        end
+    end
     
-    euOut = safeCall("getEUOutputAverage") or safeCall("getAverageOutputVoltage") or 
-            safeCall("getOutputVoltage") or safeCall("getEUOutput") or safeCall("getOutputEU")
+    -- PRIORITY 2: If getSensorInformation slots didn't work, try direct GT methods
+    if not euIn then
+        euIn = safeCall("getEUInputAverage") or safeCall("getAverageInputVoltage") or 
+               safeCall("getInputVoltage") or safeCall("getEUInput") or safeCall("getInputEU")
+    end
     
-    -- Try getSensorInformation which might contain input/output data
-    if not euIn or not euOut then
-        local sensorInfo = safeCall("getSensorInformation")
-        if sensorInfo and type(sensorInfo) == "table" then
-            -- GT sensor information often has input/output as array elements
-            -- Common patterns: [1] = input rate, [2] = output rate
-            for i, info in ipairs(sensorInfo) do
-                local infoStr = tostring(info)
-                if string.find(infoStr, "Input") or string.find(infoStr, "input") then
-                    local rate = tonumber(string.match(infoStr, "([%d%.]+)"))
-                    if rate then euIn = rate end
-                elseif string.find(infoStr, "Output") or string.find(infoStr, "output") then
-                    local rate = tonumber(string.match(infoStr, "([%d%.]+)"))
-                    if rate then euOut = rate end
-                end
+    if not euOut then
+        euOut = safeCall("getEUOutputAverage") or safeCall("getAverageOutputVoltage") or 
+                safeCall("getOutputVoltage") or safeCall("getEUOutput") or safeCall("getOutputEU")
+    end
+    
+    -- PRIORITY 3: Last resort - pattern matching in getSensorInformation
+    if (not euIn or not euOut) and sensorInfo and type(sensorInfo) == "table" then
+        for i, info in ipairs(sensorInfo) do
+            local infoStr = tostring(info)
+            if not euIn and (string.find(infoStr, "Input") or string.find(infoStr, "input")) then
+                local rate = tonumber(string.match(infoStr, "([%d%.]+)"))
+                if rate then euIn = rate end
+            elseif not euOut and (string.find(infoStr, "Output") or string.find(infoStr, "output")) then
+                local rate = tonumber(string.match(infoStr, "([%d%.]+)"))
+                if rate then euOut = rate end
             end
         end
     end
@@ -1455,6 +1475,66 @@ elseif args[1] == "debug-energy" then
     local level = getEnergyLevel()
     print(string.format("Final result: %.1f%%", level * 100))
     return
+
+elseif args[1] == "debug-eu-rates" then
+    print("🔍 EU INPUT/OUTPUT RATES DEBUG MODE")
+    print("Initializing components...")
+    pcall(initializeComponents)
+    
+    if not energyStorage then
+        print("❌ No energy storage component found!")
+        print("Run 'controller inspect-adapter' to check adapter connection")
+        return
+    end
+    
+    print("Testing getSensorInformation on: " .. tostring(energyStorage))
+    print("")
+    
+    -- Test getSensorInformation
+    print("⚡ TESTING getSensorInformation:")
+    if energyStorage["getSensorInformation"] then
+        local success, result = pcall(function() return energyStorage["getSensorInformation"]() end)
+        if success and result then
+            print("   ✅ getSensorInformation returned:")
+            if type(result) == "table" then
+                for i, info in ipairs(result) do
+                    local marker = ""
+                    if i == 10 then marker = " ← EU IN (slot 10)"
+                    elseif i == 11 then marker = " ← EU OUT (slot 11)"
+                    end
+                    print(string.format("     [%d] %s%s", i, tostring(info), marker))
+                end
+                
+                print("")
+                print("   🎯 CHECKING SPECIFIC SLOTS:")
+                if result[10] then
+                    local rate10 = tonumber(string.match(tostring(result[10]), "([%d%.]+)"))
+                    print(string.format("     Slot 10 (EU IN): %s → Parsed rate: %s", 
+                          tostring(result[10]), rate10 and formatEU(rate10) .. "/s" or "Could not parse"))
+                end
+                if result[11] then
+                    local rate11 = tonumber(string.match(tostring(result[11]), "([%d%.]+)"))
+                    print(string.format("     Slot 11 (EU OUT): %s → Parsed rate: %s", 
+                          tostring(result[11]), rate11 and formatEU(rate11) .. "/s" or "Could not parse"))
+                end
+            else
+                print("     " .. tostring(result))
+            end
+        else
+            print("   ❌ getSensorInformation failed or returned nil")
+        end
+    else
+        print("   ⚪ getSensorInformation: Not available")
+    end
+    
+    print("")
+    print("⚡ CURRENT getEUInOutRates() RESULT:")
+    local euIn, euOut = getEUInOutRates()
+    print(string.format("   EU In: %s", euIn and formatEU(euIn) .. "/s" or "N/A"))
+    print(string.format("   EU Out: %s", euOut and formatEU(euOut) .. "/s" or "N/A"))
+    
+    return
+
 elseif args[1] == "help" then
     print("=== CONTROLLER HELP ===")
     print("Usage: controller [command]")
@@ -1468,6 +1548,7 @@ elseif args[1] == "help" then
     print("  inspect-adapter   - Check if adapter is connected and what it sees")
     print("  test-energy       - Test all energy reading methods on your adapter")
     print("  debug-energy      - Run energy reading with detailed debug output")
+    print("  debug-eu-rates    - Debug EU input/output rate methods using getSensorInformation")
     print("  help              - Show this help message")
     print("")
     print("Energy Troubleshooting (if showing 0%):")
@@ -1475,6 +1556,11 @@ elseif args[1] == "help" then
     print("  2. Run 'controller test-energy' to see which methods work")
     print("  3. Run 'controller debug-energy' for verbose energy reading")
     print("  4. Check adapter placement (must be adjacent to supercapacitor)")
+    print("")
+    print("EU Rate Troubleshooting (if EU In/Out rates show 0 or N/A):")
+    print("  1. Run 'controller debug-eu-rates' to see getSensorInformation slots 10/11")
+    print("  2. Check if your supercapacitor is actively charging/discharging")
+    print("  3. Verify adapter is connected to supercapacitor controller (not casing)")
     print("")
     return
 end
