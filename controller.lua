@@ -574,9 +574,37 @@ local function getMaintenanceStatus()
         return nil
     end
     
+    -- Helper function to clean maintenance status text
+    local function cleanMaintenanceText(text)
+        if not text then return nil end
+        
+        local cleanText = tostring(text)
+        
+        -- Remove color codes (§a, §r, etc.)
+        cleanText = string.gsub(cleanText, "§[0-9a-fA-F]", "")
+        
+        -- Remove "Maintenance Status" prefix
+        cleanText = string.gsub(cleanText, "^Maintenance Status%s*", "")
+        
+        -- Trim whitespace
+        cleanText = string.gsub(cleanText, "^%s+", "")
+        cleanText = string.gsub(cleanText, "%s+$", "")
+        
+        return cleanText ~= "" and cleanText or nil
+    end
+    
     -- Try getSensorInformation for maintenance data
     local sensorInfo = safeCall("getSensorInformation")
     if sensorInfo and type(sensorInfo) == "table" then
+        -- PRIORITY 1: Check slot 17 specifically for maintenance status
+        if sensorInfo[17] then
+            local cleanStatus = cleanMaintenanceText(sensorInfo[17])
+            if cleanStatus then
+                return cleanStatus
+            end
+        end
+        
+        -- PRIORITY 2: Fallback - search all entries for maintenance-related information
         for i, info in ipairs(sensorInfo) do
             local infoStr = tostring(info)
             
@@ -590,7 +618,10 @@ local function getMaintenanceStatus()
                string.find(infoStr, "Perfect") or string.find(infoStr, "perfect") or
                string.find(infoStr, "Needs") or string.find(infoStr, "needs") or
                string.find(infoStr, "Efficiency") or string.find(infoStr, "efficiency") then
-                return infoStr
+                local cleanStatus = cleanMaintenanceText(infoStr)
+                if cleanStatus then
+                    return cleanStatus
+                end
             end
         end
     end
@@ -1606,6 +1637,7 @@ elseif args[1] == "debug-eu-rates" then
                     local marker = ""
                     if i == 10 then marker = " ← EU IN (slot 10)"
                     elseif i == 11 then marker = " ← EU OUT (slot 11)"
+                    elseif i == 17 then marker = " ← MAINTENANCE (slot 17)"
                     end
                     print(string.format("     [%d] %s%s", i, tostring(info), marker))
                 end
@@ -1633,6 +1665,18 @@ elseif args[1] == "debug-eu-rates" then
                     end
                     print(string.format("     Slot 11 (EU OUT): %s → Parsed rate: %s", 
                           info11Str, rate11 and formatEU(rate11) .. "/s" or "Could not parse"))
+                end
+                if result[17] then
+                    local info17Str = tostring(result[17])
+                    -- Clean maintenance text using same logic as getMaintenanceStatus
+                    local cleanText = info17Str
+                    cleanText = string.gsub(cleanText, "§[0-9a-fA-F]", "") -- Remove color codes
+                    cleanText = string.gsub(cleanText, "^Maintenance Status%s*", "") -- Remove prefix
+                    cleanText = string.gsub(cleanText, "^%s+", "") -- Trim start
+                    cleanText = string.gsub(cleanText, "%s+$", "") -- Trim end
+                    local cleanStatus = cleanText ~= "" and cleanText or nil
+                    print(string.format("     Slot 17 (MAINTENANCE): %s → Cleaned: %s", 
+                          info17Str, cleanStatus or "Could not parse"))
                 end
             else
                 print("     " .. tostring(result))
