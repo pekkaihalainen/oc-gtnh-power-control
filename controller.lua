@@ -463,9 +463,23 @@ local function getSmoothedUsageRate()
     return ballparkRate, "ok"
 end
 
--- Memory management and monitoring
+-- Memory management and monitoring (with OpenComputers compatibility)
 local function manageMemory()
     cycleCount = cycleCount + 1
+    
+    -- Check if garbage collection is available
+    if not collectgarbage then
+        -- Fallback for environments without collectgarbage
+        if cycleCount % GC_INTERVAL == 0 then
+            print("🧹 Memory cleanup: (GC not available in this environment)")
+            
+            -- Reset cycle counter to prevent overflow
+            if cycleCount > 1000 then
+                cycleCount = 0
+            end
+        end
+        return
+    end
     
     -- Run garbage collection periodically
     if cycleCount % GC_INTERVAL == 0 then
@@ -923,7 +937,11 @@ local function main()
     print(string.format("Low threshold: %.0f%% | High threshold: %.0f%%", LOW_THRESHOLD * 100, HIGH_THRESHOLD * 100))
     print(string.format("Check interval: %ds | Redstone output: All sides", CHECK_INTERVAL))
     print("Memory optimization: Enabled | GC interval: " .. GC_INTERVAL .. " cycles")
-    print("Initial memory usage: " .. math.floor(collectgarbage("count")) .. " KB")
+    if collectgarbage then
+        print("Initial memory usage: " .. math.floor(collectgarbage("count")) .. " KB")
+    else
+        print("Initial memory usage: (GC not available in this environment)")
+    end
     print("Press Ctrl+C to stop")
     print("")
     
@@ -1053,8 +1071,12 @@ local function main()
             -- Clear memory before exit
             energyHistory = nil
             usageRateHistory = nil
-            collectgarbage("collect")
-            print("✓ Memory cleared")
+            if collectgarbage then
+                collectgarbage("collect")
+                print("✓ Memory cleared")
+            else
+                print("✓ Tables cleared (GC not available)")
+            end
             
             break
         end
