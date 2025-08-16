@@ -764,12 +764,39 @@ end
 -- Draw the main GUI (with error handling)
 -- Track if GUI has been initialized to avoid unnecessary screen clears
 local guiInitialized = false
+local lastScreenResolution = nil
+local fullRefreshCounter = 0
+local FULL_REFRESH_INTERVAL = 60 -- Force full refresh every 60 cycles (5 minutes at 5s intervals)
 
 local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     -- Check if GPU/screen are available
     if not gpu or not screen then
         print("⚠ Warning: GUI not available, GPU or screen missing")
         return false
+    end
+    
+    -- Detect screen corruption and force refresh when needed
+    local currentResolution = screenWidth .. "x" .. screenHeight
+    local forceRefresh = false
+    
+    -- Check for resolution changes (indicates screen reset)
+    if lastScreenResolution and lastScreenResolution ~= currentResolution then
+        print("🔄 Screen resolution changed - forcing GUI refresh")
+        forceRefresh = true
+    end
+    lastScreenResolution = currentResolution
+    
+    -- Periodic full refresh to prevent corruption buildup
+    fullRefreshCounter = fullRefreshCounter + 1
+    if fullRefreshCounter >= FULL_REFRESH_INTERVAL then
+        print("🧹 Periodic GUI refresh to prevent corruption")
+        fullRefreshCounter = 0
+        forceRefresh = true
+    end
+    
+    -- Force refresh if corruption detected or needed
+    if forceRefresh then
+        guiInitialized = false
     end
     
     -- Wrap entire GUI drawing in error handling
@@ -825,7 +852,8 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
             
             -- Instructions (static)
             gpu.setForeground(0x00A6FF)
-            gpu.set(3, screenHeight - 1, "Press Ctrl+C to stop the program")
+            gpu.set(3, screenHeight - 2, "Press Ctrl+C to stop | Press R to refresh screen")
+            gpu.set(3, screenHeight - 1, "Periodic refresh every 5 minutes | Manual refresh available")
             
             guiInitialized = true
         end
@@ -833,8 +861,8 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     -- Always update dynamic content (time)
     gpu.setForeground(0x00A6FF)
     local timeStr = os.date("%Y-%m-%d %H:%M:%S")
-    -- Clear the time area first to avoid leftover characters
-    gpu.fill(screenWidth - 19, 2, 19, 1, " ")
+    -- Clear the entire right side of the title line to avoid leftover characters
+    gpu.fill(screenWidth - 25, 2, 25, 1, " ")
     gpu.set(screenWidth - unicode.len(timeStr), 2, timeStr)
     
     -- Progress bar
@@ -850,13 +878,13 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     gpu.setForeground(0x00A6FF)
     local percentText = string.format("%.1f%%", energyPercent * 100)
     local percentX = math.floor((screenWidth - unicode.len(percentText)) / 2) + 1
-    -- Clear the percentage area to avoid leftover characters
-    gpu.fill(percentX - 2, barY - 1, 10, 1, " ")
+    -- Clear the entire percentage line to avoid leftover characters
+    gpu.fill(1, barY - 1, screenWidth, 1, " ")
     gpu.set(percentX, barY - 1, percentText)
     
     -- Clear and update energy details
     local currentEnergyLine = barY + barHeight + 3
-    gpu.fill(3, currentEnergyLine, screenWidth - 6, 1, " ")
+    gpu.fill(1, currentEnergyLine, screenWidth, 1, " ")
     gpu.setForeground(0x00A6FF)
     gpu.set(3, currentEnergyLine, "Current: " .. formatEU(currentEnergy) .. " / " .. formatEU(maxEnergy))
     
@@ -867,7 +895,7 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     local currentLine = barY + barHeight + 4
     
     -- Clear and update EU input rate
-    gpu.fill(3, currentLine, screenWidth - 6, 1, " ")
+    gpu.fill(1, currentLine, screenWidth, 1, " ")
     gpu.setForeground(0x00A6FF) -- Light blue for input
     local euInText = "Average EU In: "
     if euIn and euIn ~= 0 then
@@ -881,7 +909,7 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     currentLine = currentLine + 1
     
     -- Clear and update EU output rate
-    gpu.fill(3, currentLine, screenWidth - 6, 1, " ")
+    gpu.fill(1, currentLine, screenWidth, 1, " ")
     gpu.setForeground(0xFFB366) -- Light orange for output
     local euOutText = "Average EU Out: "
     if euOut and euOut ~= 0 then
@@ -898,7 +926,7 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     currentLine = currentLine + 1
     
     -- Clear and update usage information
-    gpu.fill(3, currentLine, screenWidth - 6, 1, " ")
+    gpu.fill(1, currentLine, screenWidth, 1, " ")
     if status == "ok" then
         if usageRate < 0 then
             -- Consuming energy (any negative rate)
@@ -924,8 +952,8 @@ local function drawGUI(energyPercent, currentEnergy, maxEnergy)
     local statusColor = isRedstoneActive and 0xFF0000 or 0x808080
     local statusText = isRedstoneActive and "  ACTIVE  " or " INACTIVE "
     
-    -- Clear the status area and update
-    gpu.fill(21, statusY, 10, 1, " ")
+    -- Clear the entire status line area and update
+    gpu.fill(20, statusY, screenWidth - 20, 1, " ")
     gpu.setForeground(0x000000)
     gpu.setBackground(statusColor)
     gpu.set(21, statusY, statusText)
@@ -1118,9 +1146,16 @@ local function main()
         -- Hourly table cleanup
         hourlyCleanup()
         
-        -- Wait for next check or handle interruption
-        local eventType = event.pull(CHECK_INTERVAL, "interrupted")
-        if eventType == "interrupted" then
+        -- Wait for next check or handle interruption and key events
+        local eventType, _, char, code = event.pull(CHECK_INTERVAL, "interrupted", "key_down")
+        if eventType == "key_down" then
+            -- Handle key presses
+            if char == string.byte('r') or char == string.byte('R') then
+                print("🔄 Manual GUI refresh requested by user")
+                guiInitialized = false -- Force full screen refresh on next cycle
+                fullRefreshCounter = 0 -- Reset periodic refresh counter
+            end
+        elseif eventType == "interrupted" then
             print("\n🛑 Program interrupted - cleaning up...")
             
             -- Safely disable redstone signal
